@@ -1,0 +1,66 @@
+[
+  {
+    "competitor_name": "Progressive",
+    "product_name": "Snapshot EV Battery Endorsement",
+    "coverage_summary": "PLACEHOLDER - replace with real researched source before demo. Offers specialized high-voltage battery replacement endorsement for personal electric vehicles, covering thermal runaway and sudden capacity loss exceeding 30% within 3 years.",
+    "source_url": "https://www.progressive.com/auto/electric-vehicle-insurance/",
+    "date_collected": "2026-09-01",
+    "source_type": "competitor"
+  },
+  {
+    "competitor_name": "GEICO",
+    "product_name": "EV Battery Degradation & Thermal Protection Rider",
+    "coverage_summary": "PLACEHOLDER - replace with real researched source before demo. Optional rider covering battery cell failure, fire damage from charging malfunctions, and OEM battery replacement minus standard comprehensive deductible.",
+    "source_url": "https://www.geico.com/auto-insurance/electric-cars/",
+    "date_collected": "2026-09-05",
+    "source_type": "competitor"
+  },
+  {
+    "competitor_name": "State Farm",
+    "product_name": "Clean Energy Drive Battery Replacement Option",
+    "coverage_summary": "PLACEHOLDER - replace with real researched source before demo. Extends standard collision and comprehensive coverage to specifically include OEM battery pack replacement and dedicated roadside charging towing.",
+    "source_url": "https://www.statefarm.com/insurance/auto/green-vehicles",
+    "date_collected": "2026-09-10",
+    "source_type": "competitor"
+  },
+  {
+    "competitor_name": "Allstate",
+    "product_name": "Milewise EV High-Voltage Battery Protection",
+    "coverage_summary": "PLACEHOLDER - replace with real researched source before demo. Pay-per-mile EV product bundling high-voltage battery degradation warranty wrap-around and emergency disconnect coverage.",
+    "source_url": "https://www.allstate.com/auto-insurance/electric-hybrid",
+    "date_collected": "2026-09-12",
+    "source_type": "competitor"
+  },
+  {
+    "competitor_name": "Travelers",
+    "product_name": "Premier EV Battery Protection Endorsement",
+    "coverage_summary": "PLACEHOLDER - replace with real researched source before demo. Commercial and personal auto endorsement covering battery pack structural casing damage, electrical surge during supercharging, and recycling logistics.",
+    "source_url": "https://www.travelers.com/car-insurance/electric-vehicle-insurance",
+    "date_collected": "2026-09-15",
+    "source_type": "competitor"
+  },
+  {
+    "competitor_name": "Liberty Mutual",
+    "product_name": "EV Battery Degradation & Accidental Damage Add-On",
+    "coverage_summary": "PLACEHOLDER - replace with real researched source before demo. Standalone add-on for new EV policies providing zero-depreciation battery replacement following accidental undercarriage impact or water ingress.",
+    "source_url": "https://www.libertymutual.com/auto-insurance/ev-battery",
+    "date_collected": "2026-09-18",
+    "source_type": "competitor"
+  },
+  {
+    "competitor_name": "Nationwide",
+    "product_name": "High-Voltage Battery & Charging Cable Coverage Package",
+    "coverage_summary": "PLACEHOLDER - replace with real researched source before demo. Bundled coverage including wall-box home chargers, portable fast-charging cables, and catastrophic battery short-circuit damage.",
+    "source_url": "https://www.nationwide.com/personal/insurance/auto/green-car",
+    "date_collected": "2026-09-20",
+    "source_type": "competitor"
+  },
+  {
+    "competitor_name": "Lemonade",
+    "product_name": "Lemonade Car EV Battery Wear & Tear Protection Rider",
+    "coverage_summary": "PLACEHOLDER - replace with real researched source before demo. App-based micromobility and EV battery rider providing fixed payouts for battery health dropping below 70% state-of-health threshold.",
+    "source_url": "https://www.lemonade.com/car/ev-insurance",
+    "date_collected": "2026-09-22",
+    "source_type": "competitor"
+  }
+]

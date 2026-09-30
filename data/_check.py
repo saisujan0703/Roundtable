@@ -1,0 +1,10 @@
+import sqlite3
+conn = sqlite3.connect("roundtable.db")
+c = conn.cursor()
+c.execute("SELECT loss_cause, COUNT(*) FROM claims WHERE loss_cause='strain'")
+print("Total strain:", c.fetchone())
+c.execute("SELECT loss_cause, COUNT(*) FROM claims WHERE loss_cause='fire'")
+print("Total fire:", c.fetchone())
+c.execute("SELECT loss_cause, COUNT(*) FROM claims WHERE loss_cause='rollover'")
+print("Total rollover:", c.fetchone())
+conn.close()

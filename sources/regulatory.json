@@ -1,0 +1,29 @@
+[
+  {
+    "regulatory_body": "NAIC (National Association of Insurance Commissioners)",
+    "regulation_title": "Bulletin 2024-03: Underwriting Guidelines for High-Voltage Battery Hazard Classification",
+    "summary": "PLACEHOLDER - replace with real researched source before demo. Recommends state insurance departments require carriers to provide transparent disclosure of battery exclusion clauses and define standard rating tiers for lithium-ion fire liability.",
+    "source_url": "https://content.naic.org/regulatory-bulletins/2024-03-ev-battery-underwriting",
+    "date_effective": "2024-06-01",
+    "date_collected": "2026-09-01",
+    "source_type": "regulatory"
+  },
+  {
+    "regulatory_body": "California Department of Insurance (CDI)",
+    "regulation_title": "Notice on Mandatory Battery Replacement Minimum Standards & Salvage Handling",
+    "summary": "PLACEHOLDER - replace with real researched source before demo. Prohibits non-OEM battery replacements in total loss repair determinations unless certified by battery health telemetry; mandates disclosure of battery recycling compliance.",
+    "source_url": "https://www.insurance.ca.gov/0250-insurers/0300-ins-sub-req/ev-battery-mandates.cfm",
+    "date_effective": "2025-01-15",
+    "date_collected": "2026-09-05",
+    "source_type": "regulatory"
+  },
+  {
+    "regulatory_body": "National Highway Traffic Safety Administration (NHTSA) / DOT",
+    "regulation_title": "FMVSS Standard 305a: Electric Vehicle Safety & Battery Fire Post-Crash Integrity",
+    "summary": "PLACEHOLDER - replace with real researched source before demo. Federal mandate establishing post-impact electrical isolation and thermal runaway containment thresholds; requires insurer loss reporting on battery thermal runaway incidents.",
+    "source_url": "https://www.nhtsa.gov/laws-regulations/fmvss-305a-ev-battery-safety",
+    "date_effective": "2025-09-01",
+    "date_collected": "2026-09-10",
+    "source_type": "regulatory"
+  }
+]
