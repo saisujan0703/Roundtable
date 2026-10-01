@@ -1,9 +1,42 @@
 """
 Synthetic Insurance Data Generator
 ===================================
-Generates Guidewire PolicyCenter (policies) and ClaimCenter (claims) datasets
-grounded in verified 10.2.1 schema definitions, then loads them into a local
-SQLite database.
+Generates Guidewire-shaped PolicyCenter and ClaimCenter data and loads it
+into roundtable.db. The data is built the way a carrier's book actually
+behaves, so that claims-team metrics computed from it are meaningful:
+
+  policies        One row per policy *period* (term). Policies renew with a
+                  retention rate, so the book grows over time. Auto terms
+                  are 6 months, all other lines 12 months.
+  earned_exposure Earned exposure units and earned premium per policy period
+                  per calendar year. This is the denominator for frequency
+                  (claims per 1,000 exposure-years) and loss ratio.
+  claims          Claim header (ClaimCenter Claim): dates, state, cause,
+                  fault, segment, assignment, litigation, SIU, CAT code,
+                  denial / no-payment reason and financial roll-ups.
+  exposures       ClaimCenter Exposure rows: exposure type, coverage,
+                  claimant, reserves, payments, recoveries, limits.
+
+Claims are generated from exposure with Poisson frequencies per line and
+loss cause, so claim counts follow the book and the trends below are
+embedded in the rates rather than painted onto random rows:
+
+  - EV share of the auto book grows every year, and EV claims carry a
+    battery_fault tag when the high-voltage pack is damaged (collision,
+    road debris, thermal event, flood) or fails on its own (denied as
+    mechanical breakdown -> a coverage-gap signal).
+  - Homeowners water damage frequency rises year over year, plus a winter
+    freeze CAT in TX and a hurricane CAT in FL.
+  - Workers' comp strain frequency rises year over year.
+  - Vehicle theft is concentrated in IL and on 2015-2021 Kia/Hyundai ICE
+    models, fading after the 2023 anti-theft software fix.
+  - Rollovers are concentrated in TX; premises falls in commercial lines.
+
+Typelist codes follow 04_CC_TYPELIST_CATALOG.md (LossCause, ExposureType,
+CoverageType, ClaimSegment, ClaimClosedOutcomeType, FaultRating,
+LitigationStatus, SIUStatus, LossType). risk_category_tag and
+denial_reason / no_payment_reason are custom extensions (see
+01_ENTITY_EXTENSION_GUIDE.md).
 
 Source schemas:
   - 09_SYNTHETIC_DATA_SCHEMA.md
@@ -13,673 +46,1023 @@ Source schemas:
 """
 from __future__ import annotations
 
+import math
 import sqlite3
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from faker import Faker
 
 # ---------------------------------------------------------------------------
-# Paths & global RNG
+# Paths, dates & RNG
 # ---------------------------------------------------------------------------
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT_DIR / "roundtable.db"
-RNG = np.random.default_rng(123)
+
+AS_OF = pd.Timestamp("2026-09-30")       # valuation date: nothing after this exists
+BOOK_START = pd.Timestamp("2022-01-01")  # first new-business effective date
+N_NEW_BUSINESS = 60_000                  # new-business policies written 2022 -> AS_OF
+SEED = 20260930
 
 # ---------------------------------------------------------------------------
-# Verified typelist allowed values
-# (from 09_SYNTHETIC_DATA_SCHEMA.md & source .tti/.ttx files)
+# Book of business
 # ---------------------------------------------------------------------------
-US_STATES = [
-    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
-    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
-    "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
-    "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
-    "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+# Population-weighted state mix (top states explicit, remainder spread)
+STATE_WEIGHTS = {
+    "CA": 11.5, "TX": 9.0, "FL": 6.8, "NY": 5.8, "PA": 3.9, "IL": 3.8, "OH": 3.5,
+    "GA": 3.3, "NC": 3.2, "MI": 3.0, "NJ": 2.8, "VA": 2.6, "WA": 2.3, "AZ": 2.2,
+    "MA": 2.1, "TN": 2.1, "IN": 2.0, "MO": 1.8, "MD": 1.8, "WI": 1.8, "CO": 1.8,
+    "MN": 1.7, "SC": 1.6, "AL": 1.5, "LA": 1.4, "KY": 1.4, "OR": 1.3, "OK": 1.2,
+    "CT": 1.1, "UT": 1.0, "IA": 1.0, "NV": 1.0, "AR": 0.9, "MS": 0.9, "KS": 0.9,
+    "NM": 0.6, "NE": 0.6, "ID": 0.6, "WV": 0.5, "HI": 0.4, "NH": 0.4, "ME": 0.4,
+    "MT": 0.3, "RI": 0.3, "DE": 0.3, "SD": 0.3, "ND": 0.2, "AK": 0.2, "VT": 0.2, "WY": 0.2,
+}
+STATES = np.array(list(STATE_WEIGHTS.keys()), dtype=object)
+STATE_P = np.array(list(STATE_WEIGHTS.values())) / sum(STATE_WEIGHTS.values())
+
+PRODUCT_MIX = {
+    "PersonalAuto": 0.46,
+    "HOPHomeowners": 0.26,
+    "BusinessAuto": 0.09,
+    "CommercialProperty": 0.11,
+    "WorkersComp": 0.08,
+}
+TERM_MONTHS = {"PersonalAuto": 6, "BusinessAuto": 12, "HOPHomeowners": 12,
+               "CommercialProperty": 12, "WorkersComp": 12}
+RETENTION = {"PersonalAuto": 0.87, "BusinessAuto": 0.83, "HOPHomeowners": 0.88,
+             "CommercialProperty": 0.84, "WorkersComp": 0.85}
+CANCEL_RATE = 0.04            # share of terms cancelled mid-term
+RATE_CHANGE_PER_YEAR = 0.07   # filed rate increases, applied at renewal
+LOSS_TYPE = {"PersonalAuto": "AUTO", "BusinessAuto": "AUTO", "HOPHomeowners": "PR",
+             "CommercialProperty": "PR", "WorkersComp": "WC"}
+AUTO_LINES = ("PersonalAuto", "BusinessAuto")
+
+# (make, model, new price) by powertrain
+PA_VEHICLES = {
+    "ICE": [("Toyota", "Camry", 29000), ("Toyota", "RAV4", 32000), ("Honda", "Civic", 26000),
+            ("Honda", "CR-V", 32000), ("Ford", "F-150", 48000), ("Ford", "Explorer", 42000),
+            ("Chevrolet", "Silverado", 45000), ("Chevrolet", "Equinox", 30000), ("Nissan", "Rogue", 30000),
+            ("Jeep", "Grand Cherokee", 45000), ("Jeep", "Wrangler", 40000), ("BMW", "X5", 65000),
+            ("Hyundai", "Elantra", 23000), ("Hyundai", "Tucson", 29000), ("Kia", "Sportage", 29000),
+            ("Kia", "Optima", 25000), ("Subaru", "Outback", 32000)],
+    "Hybrid": [("Toyota", "Prius", 30000), ("Toyota", "RAV4 Hybrid", 35000),
+               ("Honda", "Accord Hybrid", 34000), ("Ford", "Maverick Hybrid", 26000)],
+    "EV": [("Tesla", "Model Y", 47000), ("Tesla", "Model 3", 42000), ("Ford", "Mustang Mach-E", 48000),
+           ("Chevrolet", "Bolt EV", 28000), ("Hyundai", "Ioniq 5", 45000), ("Kia", "EV6", 46000),
+           ("Nissan", "Leaf", 30000), ("BMW", "i4", 55000), ("Rivian", "R1S", 78000)],
+}
+PA_VEHICLE_P = {
+    "ICE": [0.09, 0.09, 0.07, 0.08, 0.09, 0.06, 0.07, 0.06, 0.06, 0.05, 0.04, 0.03, 0.04, 0.04, 0.04, 0.03, 0.06],
+    "Hybrid": [0.30, 0.35, 0.20, 0.15],
+    "EV": [0.30, 0.22, 0.10, 0.10, 0.08, 0.06, 0.06, 0.04, 0.04],
+}
+BA_VEHICLES = {
+    "ICE": [("Ford", "Transit", 48000), ("Ford", "F-250", 55000), ("Chevrolet", "Express", 42000),
+            ("Ram", "ProMaster", 44000), ("Chevrolet", "Silverado", 45000)],
+    "Hybrid": [("Ford", "F-150 PowerBoost", 55000)],
+    "EV": [("Ford", "E-Transit", 52000), ("Rivian", "EDV", 83000), ("Tesla", "Model Y", 47000)],
+}
+BA_VEHICLE_P = {"ICE": [0.30, 0.25, 0.15, 0.15, 0.15], "Hybrid": [1.0], "EV": [0.55, 0.25, 0.20]}
+
+# Share of new-business vehicles by powertrain, by year written
+EV_SHARE = {"PersonalAuto": {2022: 0.06, 2023: 0.09, 2024: 0.12, 2025: 0.15, 2026: 0.18},
+            "BusinessAuto": {2022: 0.02, 2023: 0.03, 2024: 0.05, 2025: 0.07, 2026: 0.09}}
+HYBRID_SHARE = {"PersonalAuto": 0.07, "BusinessAuto": 0.03}
+
+# Replacement cost of the high-voltage battery pack by model (USD, parts + labour)
+EV_PACK_COST = {"Model Y": 16500, "Model 3": 15500, "Mustang Mach-E": 22000, "Bolt EV": 16000,
+                "Ioniq 5": 25000, "EV6": 25000, "Leaf": 9500, "i4": 22000, "R1S": 30000,
+                "E-Transit": 24000, "EDV": 32000}
+
+# ---------------------------------------------------------------------------
+# Loss causes: frequency per exposure-unit-year by line
+#   unit = vehicle (auto), dwelling (HO), location (CP), employee (WC)
+# ---------------------------------------------------------------------------
+# year_trend multiplies frequency by accident year; state_mult by policy state.
+CAUSES = {
+    "PersonalAuto": [
+        {"cause": "vehcollision",   "freq": 0.040},
+        {"cause": "rearend",        "freq": 0.030},
+        {"cause": "fixedobjcoll",   "freq": 0.012},
+        {"cause": "animalcollision", "freq": 0.007},
+        {"cause": "otherobjcoll",   "freq": 0.004},   # road debris
+        {"cause": "rollover",       "freq": 0.0025, "state_mult": {"TX": 2.1, "OK": 1.6, "WY": 1.8}},
+        {"cause": "theftentire",    "freq": 0.0030, "state_mult": {"IL": 2.2, "CA": 1.3, "MO": 1.4}},
+        {"cause": "theftparts",     "freq": 0.0040, "exclude_powertrain": ["EV"]},   # catalytic converters
+        {"cause": "glassbreakage",  "freq": 0.028},
+        {"cause": "hail",           "freq": 0.004, "state_mult": {"TX": 2.0, "CO": 2.5, "OK": 1.8, "NE": 1.8, "KS": 1.8}},
+        {"cause": "vandalism",      "freq": 0.004},
+        {"cause": "firedamage",     "freq": 0.0012, "exclude_powertrain": ["EV"]},
+        {"cause": "waterdamage",    "freq": 0.0012},  # flood / submersion
+        # EV-only high-voltage battery perils (tagged battery_fault)
+        {"cause": "firedamage",     "freq": 0.0006, "only_powertrain": ["EV"], "battery": "thermal"},
+        {"cause": "product",        "freq": 0.0055, "only_powertrain": ["EV"], "battery": "cell_failure",
+         "age_slope": 0.30},
+    ],
+    "BusinessAuto": [
+        {"cause": "vehcollision",   "freq": 0.060},
+        {"cause": "rearend",        "freq": 0.045},
+        {"cause": "fixedobjcoll",   "freq": 0.020},
+        {"cause": "otherobjcoll",   "freq": 0.006},
+        {"cause": "rollover",       "freq": 0.004, "state_mult": {"TX": 2.1, "OK": 1.6}},
+        {"cause": "theftentire",    "freq": 0.0020, "state_mult": {"IL": 2.2}},
+        {"cause": "theftparts",     "freq": 0.0060, "exclude_powertrain": ["EV"]},
+        {"cause": "glassbreakage",  "freq": 0.030},
+        {"cause": "loadingdamage",  "freq": 0.006},
+        {"cause": "firedamage",     "freq": 0.0015, "exclude_powertrain": ["EV"]},
+        {"cause": "firedamage",     "freq": 0.0008, "only_powertrain": ["EV"], "battery": "thermal"},
+        {"cause": "product",        "freq": 0.0070, "only_powertrain": ["EV"], "battery": "cell_failure",
+         "age_slope": 0.30},
+    ],
+    "HOPHomeowners": [
+        {"cause": "waterdamage", "freq": 0.020,
+         "year_trend": {2022: 1.00, 2023: 1.06, 2024: 1.18, 2025: 1.33, 2026: 1.48}},
+        {"cause": "fire",        "freq": 0.0035},
+        {"cause": "wind",        "freq": 0.010, "state_mult": {"FL": 1.8, "TX": 1.5, "LA": 1.7, "OK": 1.6}},
+        {"cause": "hail",        "freq": 0.008, "state_mult": {"TX": 2.2, "CO": 2.6, "OK": 2.0, "NE": 2.0, "KS": 2.0}},
+        {"cause": "burglary",    "freq": 0.006},
+        {"cause": "mold",        "freq": 0.0015, "state_mult": {"FL": 1.8, "LA": 1.6}},
+        {"cause": "fall",        "freq": 0.0020},   # premises liability (slip & fall)
+    ],
+    "CommercialProperty": [
+        {"cause": "waterdamage", "freq": 0.026,
+         "year_trend": {2022: 1.00, 2023: 1.05, 2024: 1.14, 2025: 1.24, 2026: 1.33}},
+        {"cause": "fire",        "freq": 0.0080},
+        {"cause": "wind",        "freq": 0.014, "state_mult": {"FL": 1.8, "TX": 1.5, "LA": 1.7}},
+        {"cause": "hail",        "freq": 0.008, "state_mult": {"TX": 2.2, "CO": 2.6, "OK": 2.0}},
+        {"cause": "burglary",    "freq": 0.012},
+        {"cause": "vandalism",   "freq": 0.008},
+        {"cause": "fall",        "freq": 0.030},    # premises liability (package GL)
+    ],
+    "WorkersComp": [
+        {"cause": "strain",     "freq": 0.032,
+         "year_trend": {2022: 1.00, 2023: 1.10, 2024: 1.24, 2025: 1.40, 2026: 1.55}},
+        {"cause": "fall",       "freq": 0.014},
+        {"cause": "struck",     "freq": 0.008},
+        {"cause": "cut",        "freq": 0.010},
+        {"cause": "caught_in",  "freq": 0.003},
+        {"cause": "burn_scald", "freq": 0.003},
+        {"cause": "motorvehicle", "freq": 0.002},
+    ],
+}
+
+# Catastrophe events: extra claims for policies in force in the listed states
+CAT_EVENTS = [
+    {"cat_code": "CAT-2023-TX-HAIL-0412", "date": "2023-04-12", "states": ["TX"], "days": 2,
+     "causes": {"PersonalAuto": ("hail", 0.050), "BusinessAuto": ("hail", 0.040),
+                "HOPHomeowners": ("hail", 0.070), "CommercialProperty": ("hail", 0.060)}},
+    {"cat_code": "CAT-2024-CO-HAIL-0603", "date": "2024-06-03", "states": ["CO"], "days": 2,
+     "causes": {"PersonalAuto": ("hail", 0.060), "HOPHomeowners": ("hail", 0.080),
+                "CommercialProperty": ("hail", 0.060)}},
+    {"cat_code": "CAT-2024-FL-HURR-1009", "date": "2024-10-09", "states": ["FL"], "days": 4,
+     "causes": {"HOPHomeowners": ("wind", 0.120), "CommercialProperty": ("wind", 0.100),
+                "PersonalAuto": ("waterdamage", 0.020), "BusinessAuto": ("waterdamage", 0.015)}},
+    {"cat_code": "CAT-2025-TX-FREEZE-0120", "date": "2025-01-20", "states": ["TX", "OK", "LA"], "days": 5,
+     "causes": {"HOPHomeowners": ("waterdamage", 0.050), "CommercialProperty": ("waterdamage", 0.040)}},
+    {"cat_code": "CAT-2026-IL-WIND-0315", "date": "2026-03-15", "states": ["IL", "IN", "MO"], "days": 2,
+     "causes": {"HOPHomeowners": ("wind", 0.045), "CommercialProperty": ("wind", 0.035)}},
 ]
 
-# Verified Policy.ProductCode pattern codes (patterncode varchar 64)
-PRODUCT_CODES = [
-    "PersonalAuto",
-    "CommercialProperty",
-    "BusinessAuto",
-    "HOPHomeowners",
-    "WorkersComp",
-]
+# ClaimCenter LossCause code -> risk_category_tag (custom extension). Perils that exist on
+# both vehicles and buildings get separate tags so each is measured on its own exposure base.
+CAUSE_TO_TAG = {"fall": "slipfall", "firedamage": "vehiclefire"}
+AUTO_CAUSE_TO_TAG = {"waterdamage": "vehicleflood", "hail": "vehiclehail", "vandalism": "vehiclevandalism"}
+WC_CAUSE_TO_TAG = {"fall": "workplace_fall"}
 
-# Verified PolicyPeriodStatus typelist values (PolicyPeriod.eti)
-POLICY_STATUS = ["Bound", "Draft", "Quoted", "Canceled"]
-POLICY_STATUS_WEIGHTS = [0.85, 0.05, 0.05, 0.05]
+COLLISION_CAUSES = {"vehcollision", "rearend", "fixedobjcoll", "otherobjcoll", "rollover", "loadingdamage"}
+COMP_CAUSES = {"animalcollision", "theftentire", "theftparts", "glassbreakage", "hail",
+               "vandalism", "firedamage", "waterdamage", "product"}
 
-# Verified ClaimState typelist values (Claim.eti)
-CLAIM_STATES = ["open", "closed", "draft"]
-CLAIM_STATE_WEIGHTS = [0.65, 0.30, 0.05]
+ASSIGNED_GROUP_SIZE = {"Auto Fast Track": 8, "Auto Physical Damage": 14, "Auto Total Loss": 6,
+                       "Auto Injury": 10, "Property Desk": 12, "Property Large Loss": 5,
+                       "Liability": 7, "WC Medical Only": 6, "WC Lost Time": 8, "SIU": 4}
 
-# Verified LossCause typelist values (LossCause.tti)
-LOSS_CAUSES = [
-    "vehcollision",
-    "rearend",
-    "rollover",
-    "theftentire",
-    "fire",
-    "waterdamage",
-    "slipfall",
-    "strain",
-]
-LOSS_CAUSE_WEIGHTS = [0.22, 0.18, 0.08, 0.12, 0.10, 0.12, 0.10, 0.08]
-
-# ---------------------------------------------------------------------------
-# Configurable engineered-pattern list
-# ---------------------------------------------------------------------------
-ENGINEERED_PATTERNS = [
-    {
-        "type": "time_trend",
-        "tag_value": "battery_fault",
-        "eligible_loss_causes": ["vehcollision"],
-        "yearly_targets": {2023: 0.08, 2024: 0.14, 2025: 0.22, 2026: 0.31},
-    },
-    {
-        "type": "geographic_skew",
-        "tag_value": "theftentire",
-        "location": "IL",
-        "multiplier": 3.0,
-    },
-    {
-        "type": "time_trend",
-        "tag_value": "waterdamage",
-        "yearly_targets": {2023: 0.05, 2024: 0.05, 2025: 0.09, 2026: 0.16},
-    },
-    {
-        "type": "segment_skew",
-        "tag_value": "slipfall",
-        "segment_field": "product_code",
-        "segment_value": "CommercialProperty",
-        "multiplier": 2.5,
-    },
-    {
-        "type": "segment_skew",
-        "tag_value": "waterdamage",
-        "segment_field": "product_code",
-        "segment_value": "HOPHomeowners",
-        "multiplier": 2.2,
-        "eligible_loss_causes": ["waterdamage", "fire"],
-    },
-    {
-        "type": "time_trend",
-        "tag_value": "strain",
-        "yearly_targets": {2023: 0.03, 2024: 0.06, 2025: 0.11, 2026: 0.19},
-        # Realistic: rising WorkersComp strain/repetitive-injury claims
-    },
-    {
-        "type": "segment_skew",
-        "tag_value": "fire",
-        "segment_field": "product_code",
-        "segment_value": "CommercialProperty",
-        "multiplier": 1.8,
-        # Realistic: commercial fire risk concentration
-    },
-    {
-        "type": "geographic_skew",
-        "tag_value": "rollover",
-        "location": "TX",
-        "multiplier": 2.1,
-        # Realistic: rollover claim concentration in a specific state
-    },
-]
-
-# ---------------------------------------------------------------------------
-# Realistic vehicle make/model tuples (PersonalVehicle schema)
-# ---------------------------------------------------------------------------
-VEHICLE_MAKES = {
-    "Honda":      ["Accord", "Civic", "CR-V", "Pilot"],
-    "Toyota":     ["Camry", "Corolla", "RAV4", "Highlander"],
-    "Ford":       ["F-150", "Escape", "Explorer", "Mustang"],
-    "Chevrolet":  ["Malibu", "Impala", "Silverado", "Equinox"],
-    "Nissan":     ["Altima", "Sentra", "Rogue", "Frontier"],
-    "Jeep":       ["Cherokee", "Wrangler", "Grand Cherokee", "Compass"],
-    "BMW":        ["3 Series", "5 Series", "X5", "X3"],
-    "Tesla":      ["Model 3", "Model Y", "Model S", "Model X"],
+LOSS_DESCRIPTIONS = {
+    "vehcollision": ["Insured vehicle collided with another vehicle at intersection",
+                     "Two-vehicle collision while changing lanes", "Side-impact collision in parking lot"],
+    "rearend": ["Insured vehicle rear-ended at stop light", "Insured rear-ended other vehicle in slow traffic"],
+    "fixedobjcoll": ["Vehicle struck guardrail on wet road", "Vehicle struck pole while parking"],
+    "animalcollision": ["Vehicle struck deer on rural highway"],
+    "otherobjcoll": ["Road debris struck vehicle underbody on highway"],
+    "rollover": ["Single-vehicle rollover after leaving roadway"],
+    "theftentire": ["Vehicle stolen from driveway overnight", "Vehicle stolen from parking garage"],
+    "theftparts": ["Catalytic converter cut from vehicle", "Wheels and tires stolen overnight"],
+    "glassbreakage": ["Windshield cracked by stone chip", "Side window broken"],
+    "hail": ["Hail damage to vehicle/roof during storm"],
+    "vandalism": ["Vehicle keyed and windows broken", "Graffiti and forced entry damage"],
+    "firedamage": ["Engine compartment fire while driving"],
+    "waterdamage": ["Water damage from burst supply line", "Water damage from appliance leak",
+                    "Vehicle submerged in flood water"],
+    "fire": ["Kitchen fire spread to adjoining rooms", "Electrical fire in attic"],
+    "wind": ["Wind damage to roof and siding"],
+    "burglary": ["Forced entry, electronics and jewelry taken", "Break-in, inventory and equipment taken"],
+    "mold": ["Mold growth discovered behind wall"],
+    "fall": ["Visitor slipped on wet floor and was injured", "Trip and fall on uneven walkway"],
+    "strain": ["Lower back strain lifting boxes", "Shoulder strain from repetitive overhead work"],
+    "struck": ["Employee struck by falling object"], "cut": ["Laceration from box cutter"],
+    "caught_in": ["Hand caught in machinery"], "burn_scald": ["Burn from hot equipment"],
+    "motorvehicle": ["Employee injured in vehicle accident while on duty"],
+    "loadingdamage": ["Cargo damaged during loading"],
+}
+BATTERY_DESCRIPTIONS = {
+    "collision": "Collision damaged high-voltage battery enclosure; pack flagged for replacement",
+    "debris": "Road debris punctured high-voltage battery enclosure",
+    "thermal": "High-voltage battery thermal event; vehicle fire while parked/charging",
+    "flood": "EV submerged in flood water; high-voltage battery compromised",
+    "cell_failure": "High-voltage battery cell failure / capacity loss with no external cause",
 }
 
 
 # =========================================================================
-# Helper: vectorized VIN generation (17-char ISO 3779 format)
+# POLICIES: new business + renewal chains (one row per policy period)
 # =========================================================================
-def generate_vins(count: int, rng: np.random.Generator) -> np.ndarray:
-    """Generate *count* synthetic 17-character VINs (I, O, Q excluded)."""
-    alphabet = "ABCDEFGHJKLMNPRSTUVWXYZ0123456789"
-    choices = np.array(list(alphabet), dtype="U1")
-    # Build a (count, 17) matrix of random chars, then join each row
-    char_matrix = rng.choice(choices, size=(count, 17))
-    vin_array = np.array(
-        ["".join(row) for row in char_matrix], dtype="U17"
-    )
-    return vin_array
+def _pick_vehicles(rng, product, powertrain, n):
+    table, probs = (PA_VEHICLES, PA_VEHICLE_P) if product == "PersonalAuto" else (BA_VEHICLES, BA_VEHICLE_P)
+    idx = rng.choice(len(table[powertrain]), size=n, p=probs[powertrain])
+    return [table[powertrain][i] for i in idx]
+
+
+def generate_policy_df(rng: np.random.Generator) -> pd.DataFrame:
+    n = N_NEW_BUSINESS
+    products = rng.choice(list(PRODUCT_MIX), size=n, p=list(PRODUCT_MIX.values()))
+    span_days = (AS_OF - BOOK_START).days
+    inception = BOOK_START + pd.to_timedelta(rng.integers(0, span_days, size=n), unit="D")
+    states = rng.choice(STATES, size=n, p=STATE_P)
+
+    base = pd.DataFrame({"product_code": products, "inception": inception, "state": states})
+    base["policy_number"] = [f"{p[:2].upper()}-{i:07d}" for i, p in enumerate(products)]
+    base["account_number"] = [f"ACC-SYN-{v:07d}" for v in rng.integers(1_000_000, 10_000_000, size=n)]
+
+    # --- Risk characteristics (fixed across renewals) ---
+    units = np.ones(n)
+    is_pa = products == "PersonalAuto"
+    is_ba = products == "BusinessAuto"
+    is_cp = products == "CommercialProperty"
+    is_wc = products == "WorkersComp"
+    units[is_pa] = rng.choice([1, 2, 3], size=is_pa.sum(), p=[0.55, 0.33, 0.12])
+    units[is_ba] = np.clip(np.round(rng.lognormal(np.log(4), 0.8, size=is_ba.sum())), 1, 60)
+    units[is_cp] = rng.choice([1, 2, 3, 4, 5], size=is_cp.sum(), p=[0.62, 0.2, 0.1, 0.05, 0.03])
+    units[is_wc] = np.clip(np.round(rng.lognormal(np.log(14), 0.9, size=is_wc.sum())), 2, 400)
+    base["exposure_units"] = units.astype(int)
+
+    powertrain = np.full(n, None, dtype=object)
+    make = np.full(n, None, dtype=object)
+    model = np.full(n, None, dtype=object)
+    new_price = np.zeros(n)
+    veh_year = np.full(n, np.nan)
+    for prod in AUTO_LINES:
+        mask = products == prod
+        idx = np.where(mask)[0]
+        written_year = inception[idx].year.to_numpy()
+        ev_p = np.array([EV_SHARE[prod][y] for y in written_year])
+        u = rng.random(len(idx))
+        pt = np.where(u < ev_p, "EV", np.where(u < ev_p + HYBRID_SHARE[prod], "Hybrid", "ICE"))
+        powertrain[idx] = pt
+        for p in ("ICE", "Hybrid", "EV"):
+            sub = idx[pt == p]
+            if len(sub) == 0:
+                continue
+            picks = _pick_vehicles(rng, prod, p, len(sub))
+            make[sub] = [v[0] for v in picks]
+            model[sub] = [v[1] for v in picks]
+            new_price[sub] = [v[2] for v in picks]
+            max_age = 6 if p == "EV" else 12
+            ages = rng.integers(0, max_age + 1, size=len(sub))
+            veh_year[sub] = inception[sub].year.to_numpy() - ages
+    base["vehicle_powertrain"] = powertrain
+    base["vehicle_make"] = make
+    base["vehicle_model"] = model
+    base["vehicle_year"] = veh_year
+    base["vehicle_new_price"] = new_price
+    alphabet = np.array(list("ABCDEFGHJKLMNPRSTUVWXYZ0123456789"))
+    vins = ["".join(r) for r in rng.choice(alphabet, size=(n, 17))]
+    base["vehicle_vin"] = np.where(np.isin(products, AUTO_LINES), vins, None)
+
+    # Coverage structure
+    auto_mask = np.isin(products, AUTO_LINES)
+    old_vehicle = auto_mask & (base["vehicle_year"].fillna(2030).to_numpy() < 2014)
+    base["physical_damage_cov"] = np.where(auto_mask, ~(old_vehicle & (rng.random(n) < 0.6)), False)
+    deductible = np.zeros(n)
+    deductible[auto_mask] = rng.choice([250, 500, 1000], size=auto_mask.sum(), p=[0.15, 0.55, 0.30])
+    deductible[products == "HOPHomeowners"] = rng.choice([1000, 2500, 5000], size=(products == "HOPHomeowners").sum(), p=[0.55, 0.35, 0.10])
+    deductible[is_cp] = rng.choice([2500, 5000, 10000], size=is_cp.sum(), p=[0.4, 0.45, 0.15])
+    base["deductible"] = deductible
+    liab = np.zeros(n)
+    liab[auto_mask] = rng.choice([50_000, 100_000, 250_000, 500_000], size=auto_mask.sum(), p=[0.2, 0.4, 0.3, 0.1])
+    liab[products == "HOPHomeowners"] = rng.choice([100_000, 300_000, 500_000], size=(products == "HOPHomeowners").sum(), p=[0.3, 0.5, 0.2])
+    liab[is_cp] = 1_000_000
+    base["liability_limit"] = liab
+    prop_limit = np.zeros(n)
+    prop_limit[products == "HOPHomeowners"] = np.round(rng.lognormal(np.log(380_000), 0.4, size=(products == "HOPHomeowners").sum()), -3)
+    prop_limit[is_cp] = np.round(rng.lognormal(np.log(1_400_000), 0.7, size=is_cp.sum()), -3)
+    base["property_limit"] = prop_limit
+
+    # Annual premium at inception (per policy, full year)
+    prem = np.zeros(n)
+    state_factor = np.where(np.isin(states, ["FL", "LA", "MI", "NY", "CA"]), 1.25, 1.0)
+    prem[is_pa] = 1750 * units[is_pa] * np.where(powertrain[is_pa] == "EV", 1.25, 1.0)
+    prem[is_ba] = 3000 * units[is_ba]
+    hop = products == "HOPHomeowners"
+    prem[hop] = 1700 * (prop_limit[hop] / 380_000) ** 0.8
+    prem[is_cp] = 9000 * units[is_cp] * (prop_limit[is_cp] / 1_400_000) ** 0.5
+    prem[is_wc] = 1900 * units[is_wc]
+    prem = prem * state_factor * rng.lognormal(0, 0.15, size=n)
+    base["annual_premium_at_inception"] = prem
+
+    # --- Renewal chains ---
+    rows = []
+    for i, r in enumerate(base.itertuples(index=False)):
+        months = TERM_MONTHS[r.product_code]
+        start = r.inception
+        term = 1
+        while start < AS_OF:
+            end = start + pd.DateOffset(months=months)
+            cancel = None
+            if rng.random() < CANCEL_RATE:
+                cancel = start + pd.Timedelta(days=int(rng.integers(20, (end - start).days)))
+            years_since = (start - r.inception).days / 365.25
+            written = r.annual_premium_at_inception * (months / 12) * (1 + RATE_CHANGE_PER_YEAR) ** years_since
+            rows.append((i, term, start, end, cancel, written))
+            if cancel is not None or rng.random() > RETENTION[r.product_code]:
+                break
+            start, term = end, term + 1
+
+    terms = pd.DataFrame(rows, columns=["base_idx", "term_number", "period_start", "period_end",
+                                        "cancel_date", "written_premium"])
+    df = base.iloc[terms["base_idx"]].reset_index(drop=True).join(terms.drop(columns="base_idx"))
+    df.insert(0, "policy_id", [f"PP-{i:07d}" for i in range(len(df))])
+    df["policy_status"] = "Bound"   # GW keeps Bound on expired/cancelled periods; cancel_date marks cancellation
+    eff_end = df[["period_end"]].assign(c=df["cancel_date"].fillna(pd.Timestamp.max), a=AS_OF).min(axis=1)
+    df["earned_through"] = eff_end
+    full_days = (df["period_end"] - df["period_start"]).dt.days
+    earned_days = (eff_end - df["period_start"]).dt.days.clip(lower=0)
+    df["earned_premium"] = (df["written_premium"] * earned_days / full_days).round(2)
+    df["written_premium"] = df["written_premium"].round(2)
+
+    # Vehicle actual cash value at term start (depreciation ~15%/yr)
+    age = (df["period_start"].dt.year - df["vehicle_year"]).clip(lower=0)
+    df["vehicle_acv"] = (df["vehicle_new_price"] * 0.85 ** age).round(-2)
+    df.loc[~df["product_code"].isin(AUTO_LINES), "vehicle_acv"] = np.nan
+    df["employee_count"] = np.where(df["product_code"] == "WorkersComp", df["exposure_units"], np.nan)
+
+    return df.drop(columns=["inception", "annual_premium_at_inception", "vehicle_new_price"])
+
+
+def build_earned_exposure(policies: pd.DataFrame) -> pd.DataFrame:
+    """Earned exposure-years and earned premium per policy period per calendar year."""
+    out = []
+    start = policies["period_start"]
+    end = policies["earned_through"]
+    full_days = (policies["period_end"] - policies["period_start"]).dt.days
+    for year in range(BOOK_START.year, AS_OF.year + 1):
+        y0, y1 = pd.Timestamp(f"{year}-01-01"), pd.Timestamp(f"{year + 1}-01-01")
+        lo = start.where(start > y0, y0)
+        hi = end.where(end < y1, y1)
+        days = (hi - lo).dt.days.clip(lower=0)
+        m = days > 0
+        if not m.any():
+            continue
+        p = policies[m]
+        out.append(pd.DataFrame({
+            "policy_id": p["policy_id"],
+            "calendar_year": year,
+            "product_code": p["product_code"],
+            "state": p["state"],
+            "vehicle_powertrain": p["vehicle_powertrain"],
+            "earned_exposure": (days[m] / 365.25 * p["exposure_units"]).round(4),
+            "earned_premium": (p["written_premium"] * days[m] / full_days[m]).round(2),
+        }))
+    return pd.concat(out, ignore_index=True)
 
 
 # =========================================================================
-# POLICIES generator  (10,000 rows)
+# CLAIM OCCURRENCES: Poisson frequency on earned exposure
 # =========================================================================
-def generate_policy_df(count: int = 10_000, seed: int = 42) -> pd.DataFrame:
-    rng = np.random.default_rng(seed)
-    fake = Faker("en_US")
-    fake.seed_instance(seed)
-    n = int(count)
+def _uniform_dates(rng, starts, ends):
+    span = np.maximum((ends - starts).dt.days.to_numpy(), 1)
+    return starts.to_numpy() + (rng.random(len(span)) * span).astype(int) * np.timedelta64(1, "D")
 
-    # --- Vectorized categorical columns ---
-    product_code = rng.choice(
-        np.array(PRODUCT_CODES, dtype=object),
-        size=n,
-        p=np.array([0.43, 0.20, 0.15, 0.10, 0.12]),
-        #           PA    CP    BA    HOP   WC  (bumped WC from .10 to .12)
-    )
-    policy_status = rng.choice(
-        np.array(POLICY_STATUS, dtype=object),
-        size=n,
-        p=np.array(POLICY_STATUS_WEIGHTS),
-    )
-    state = rng.choice(np.array(US_STATES, dtype=object), size=n)
 
-    # --- Period start: random date covering 2023-2026 range ---
-    #     ~1400 days back from today (Sept 2026) reaches early 2023
-    start_offsets = rng.integers(0, 1400, size=n)
-    base = pd.Timestamp.now().normalize()
-    period_start = base - pd.to_timedelta(start_offsets, unit="D")
+def generate_occurrences(rng: np.random.Generator, policies: pd.DataFrame) -> pd.DataFrame:
+    earned_years = ((policies["earned_through"] - policies["period_start"]).dt.days.clip(lower=0) / 365.25).to_numpy()
+    units = policies["exposure_units"].to_numpy()
+    occ = []
+    for product, specs in CAUSES.items():
+        pmask = (policies["product_code"] == product).to_numpy()
+        for spec in specs:
+            mask = pmask.copy()
+            pt = policies["vehicle_powertrain"].to_numpy()
+            if "only_powertrain" in spec:
+                mask &= np.isin(pt, spec["only_powertrain"])
+            if "exclude_powertrain" in spec:
+                mask &= ~np.isin(pt, spec["exclude_powertrain"])
+            idx = np.where(mask)[0]
+            if len(idx) == 0:
+                continue
+            sub = policies.iloc[idx]
+            lam = spec["freq"] * earned_years[idx] * units[idx]
+            if "state_mult" in spec:
+                lam = lam * sub["state"].map(spec["state_mult"]).fillna(1.0).to_numpy()
+            if spec.get("age_slope"):
+                veh_age = (sub["period_start"].dt.year - sub["vehicle_year"]).clip(lower=0).to_numpy()
+                lam = lam * (1 + spec["age_slope"] * veh_age)
+            # Kia/Hyundai 2015-2021 ICE theft wave (strongest 2022-2023)
+            kia_mult_max = 1.0
+            if spec["cause"] == "theftentire":
+                kia = (sub["vehicle_make"].isin(["Kia", "Hyundai"]) & (sub["vehicle_powertrain"] == "ICE")
+                       & sub["vehicle_year"].between(2015, 2021)).to_numpy()
+                kia_mult_max = 6.0
+                lam = lam * np.where(kia, kia_mult_max, 1.0)
+            trend = spec.get("year_trend")
+            tmax = max(trend.values()) if trend else 1.0
+            n = rng.poisson(lam * tmax)
+            rep = np.repeat(idx, n)
+            if len(rep) == 0:
+                continue
+            rp = policies.iloc[rep]
+            loss_date = pd.Series(_uniform_dates(rng, rp["period_start"], rp["earned_through"]))
+            years = loss_date.dt.year.to_numpy()
+            keep = np.ones(len(rep), dtype=bool)
+            if trend:
+                keep &= rng.random(len(rep)) < np.array([trend.get(y, tmax) for y in years]) / tmax
+            if spec["cause"] == "theftentire":
+                kia_r = (rp["vehicle_make"].isin(["Kia", "Hyundai"]) & (rp["vehicle_powertrain"] == "ICE")
+                         & rp["vehicle_year"].between(2015, 2021)).to_numpy()
+                decay = {2022: 1.0, 2023: 0.9, 2024: 0.45, 2025: 0.28, 2026: 0.22}
+                keep &= ~kia_r | (rng.random(len(rep)) < np.array([decay.get(y, 0.2) for y in years]))
+            occ.append(pd.DataFrame({
+                "policy_row": rep[keep], "loss_date": loss_date.to_numpy()[keep],
+                "loss_cause": spec["cause"], "battery_mode": spec.get("battery"), "cat_code": None,
+            }))
 
-    # --- Period end: vectorized (6 months for PersonalAuto, 1 year otherwise)
-    #     per verified temporal rule in 10_SYNTHETIC_DATA_GENERATION_RULES.md §4.3
-    is_pa = product_code == "PersonalAuto"
-    period_end = np.where(
-        is_pa,
-        period_start + pd.DateOffset(months=6),
-        period_start + pd.DateOffset(years=1),
-    )
-    # np.where produces object array; convert back to datetime
-    period_end = pd.to_datetime(period_end)
+    # Catastrophe events
+    for ev in CAT_EVENTS:
+        d0 = pd.Timestamp(ev["date"])
+        for product, (cause, freq) in ev["causes"].items():
+            m = ((policies["product_code"] == product) & policies["state"].isin(ev["states"])
+                 & (policies["period_start"] <= d0) & (policies["earned_through"] > d0)).to_numpy()
+            idx = np.where(m)[0]
+            n = rng.poisson(freq * units[idx])
+            rep = np.repeat(idx, n)
+            if len(rep) == 0:
+                continue
+            ld = d0.to_datetime64() + rng.integers(0, ev["days"], size=len(rep)) * np.timedelta64(1, "D")
+            pt = policies["vehicle_powertrain"].to_numpy()[rep]
+            battery = np.where((pt == "EV") & (cause == "waterdamage") & (rng.random(len(rep)) < 0.7), "flood", None)
+            occ.append(pd.DataFrame({"policy_row": rep, "loss_date": ld, "loss_cause": cause,
+                                     "battery_mode": battery, "cat_code": ev["cat_code"]}))
 
-    # --- Account number: ACC-SYN-{7 digits} ---
-    acct_nums = rng.integers(1_000_000, 10_000_000, size=n)
-    account_number = np.array(
-        [f"ACC-SYN-{v:07d}" for v in acct_nums], dtype=object
-    )
+    occ = pd.concat(occ, ignore_index=True)
+    occ["loss_date"] = pd.to_datetime(occ["loss_date"])
+    return occ.sort_values("loss_date").reset_index(drop=True)
 
-    # --- Policy ID (primary key) ---
-    policy_id = np.array([f"POL-{i:06d}" for i in range(n)], dtype=object)
 
-    # --- Vehicle info (linked make/model tuples) ---
-    make_names = list(VEHICLE_MAKES.keys())
-    make_idx = rng.integers(0, len(make_names), size=n)
-    vehicle_make = np.array([make_names[i] for i in make_idx], dtype=object)
-    vehicle_model = np.array(
-        [
-            VEHICLE_MAKES[make_names[i]][
-                rng.integers(0, len(VEHICLE_MAKES[make_names[i]]))
-            ]
-            for i in make_idx
-        ],
-        dtype=object,
-    )
-    vehicle_year = rng.integers(2017, 2027, size=n)  # endpoint-exclusive → 2017..2026
-    vehicle_vin = generate_vins(n, rng)
+# =========================================================================
+# CLAIM BUILDER: exposures, lifecycle, reserves, payments, recoveries
+# =========================================================================
+def _ln(rng, median, sigma):
+    return float(rng.lognormal(math.log(median), sigma))
 
-    # --- Earned Premium (Formula: Base by product line + vehicle age/make factor + lognormal variance) ---
-    PREMIUM_BASE = {
-        "PersonalAuto": 1450.0,
-        "CommercialProperty": 6200.0,
-        "BusinessAuto": 3400.0,
-        "HOPHomeowners": 1750.0,
-        "WorkersComp": 4800.0,
+
+def _inflation(year, rate):
+    return (1 + rate) ** (year - BOOK_START.year)
+
+
+class ClaimBuilder:
+    def __init__(self, rng):
+        self.rng = rng
+        self.claims = []
+        self.exposures = []
+
+    # ---- exposure definitions ------------------------------------------------
+    def _exposure(self, etype, coverage, claimant, gross_loss, deductible=0.0, limit=None,
+                  cycle_median=30, reserve_bias=1.0, total_loss=False, denial=None, subro=0.0, salvage=0.0):
+        return {"exposure_type": etype, "coverage_type": coverage, "claimant_type": claimant,
+                "gross_loss": gross_loss, "deductible": deductible, "limit": limit,
+                "cycle_median": cycle_median, "reserve_bias": reserve_bias, "total_loss": total_loss,
+                "denial": denial, "subro_pct": subro, "salvage": salvage}
+
+    def _auto_exposures(self, p, cause, battery_mode, year):
+        rng = self.rng
+        ba = p["product_code"] == "BusinessAuto"
+        cov_coll, cov_comp = ("BACollisionCov", "BAComprehensiveCov") if ba else ("PACollisionCov", "PAComprehensiveCov")
+        cov_liab = "BAOwnedLiabilityCov" if ba else "PALiabilityCov"
+        cov_med = "BAOwnedMedPayCov" if ba else "PAMedPayCov"
+        acv = float(p["vehicle_acv"] or 20000)
+        ev = p["vehicle_powertrain"] == "EV"
+        ded = float(p["deductible"])
+        infl = _inflation(year, 0.06)
+        exps, fault, tag = [], "0", None
+
+        if cause in COLLISION_CAUSES:
+            if cause == "rearend":
+                fault = rng.choice(["thirdparty", "1"], p=[0.6, 0.4])
+            elif cause == "vehcollision":
+                fault = rng.choice(["1", "thirdparty", "0"], p=[0.5, 0.35, 0.15])
+            else:
+                fault = "1"
+        else:
+            fault = "nofault"
+
+        # --- Own vehicle damage ---
+        coverage = cov_coll if cause in COLLISION_CAUSES else cov_comp
+        repair = {
+            "vehcollision": _ln(rng, 4800, 0.75), "rearend": _ln(rng, 3600, 0.7),
+            "fixedobjcoll": _ln(rng, 4200, 0.75), "otherobjcoll": _ln(rng, 2400, 0.7),
+            "rollover": _ln(rng, 16000, 0.5), "loadingdamage": _ln(rng, 2500, 0.8),
+            "animalcollision": _ln(rng, 4500, 0.6), "theftentire": acv,
+            "theftparts": _ln(rng, 2300, 0.35) * (1.6 if p["vehicle_powertrain"] == "Hybrid" else 1.0),
+            "glassbreakage": _ln(rng, 420, 0.35) + (650 if (p["vehicle_year"] or 0) >= 2020 else 0),  # ADAS recalibration
+            "hail": _ln(rng, 3900, 0.5), "vandalism": _ln(rng, 1800, 0.7),
+            "firedamage": acv, "waterdamage": acv * rng.uniform(0.6, 1.2), "product": 0.0,
+        }[cause] * (infl if cause not in ("theftentire", "firedamage") else 1.0)
+        if ev and cause in COLLISION_CAUSES:
+            repair *= 1.35   # EV repair premium: ADAS sensors, structural parts, certified shops
+
+        pack_cost = EV_PACK_COST.get(p["vehicle_model"], 18000) * _inflation(year, 0.03)
+        pack_damaged = False
+        if ev:
+            if cause in COLLISION_CAUSES:
+                pack_damaged = rng.random() < (0.35 if cause == "otherobjcoll" else 0.14 if cause != "rollover" else 0.4)
+                battery_mode = battery_mode or ("debris" if cause == "otherobjcoll" else "collision") if pack_damaged else battery_mode
+            if battery_mode in ("thermal", "flood"):
+                pack_damaged = True
+        if pack_damaged:
+            repair += pack_cost * rng.uniform(0.9, 1.25)
+            tag = "battery_fault"
+        if battery_mode == "cell_failure":
+            tag = "battery_fault"
+
+        cycle = {"glassbreakage": 6, "theftentire": 45, "theftparts": 14}.get(cause, 25)
+        reserve_bias = 1.0
+        if tag == "battery_fault":
+            cycle = 75                 # pack sourcing and certified-shop backlog
+            reserve_bias = 0.55        # FNOL estimate prices a conventional repair
+        total_loss = cause in ("theftentire", "firedamage") or repair > 0.75 * acv
+        loss = acv if total_loss else repair
+        salvage = 0.0
+        if total_loss:
+            cycle = max(cycle, 40)
+            salvage = acv * (rng.uniform(0.04, 0.10) if pack_damaged else rng.uniform(0.12, 0.25))
+        if cause == "theftentire" and rng.random() < 0.45:   # recovered vehicle
+            loss = _ln(rng, 3500, 0.6)
+            total_loss, salvage = False, 0.0
+
+        denial = None
+        if not p["physical_damage_cov"]:
+            denial = "coverage_not_purchased"
+        elif battery_mode == "cell_failure":
+            loss = pack_cost * rng.uniform(0.95, 1.3)
+            denial = "mechanical_breakdown_excluded" if rng.random() < 0.9 else None
+            cycle, reserve_bias = 35, 1.0
+        elif battery_mode == "thermal" and rng.random() < 0.12:
+            denial = "mechanical_breakdown_excluded"   # carrier argues internal defect, not fire
+        elif cause == "waterdamage" and rng.random() < 0.05:
+            denial = "wear_tear_deterioration"
+        subro = rng.uniform(0.6, 0.95) if fault == "thirdparty" else 0.0
+        exps.append(self._exposure("VehicleDamage", coverage, "insured", loss, ded, acv, cycle,
+                                   reserve_bias, total_loss, denial, subro, salvage))
+
+        # --- Third-party & injury exposures ---
+        if fault == "1" and cause in ("vehcollision", "rearend", "fixedobjcoll", "loadingdamage"):
+            if cause != "fixedobjcoll" or rng.random() < 0.3:
+                exps.append(self._exposure("PropertyDamage", cov_liab, "third_party",
+                                           _ln(rng, 4200, 0.7) * infl, 0, p["liability_limit"], 30))
+            bi_p = {"vehcollision": 0.18, "rearend": 0.24, "loadingdamage": 0.02}.get(cause, 0.05)
+            if rng.random() < bi_p * (1.3 if ba else 1.0):
+                exps.append(self._exposure("BodilyInjuryDamage", cov_liab, "third_party",
+                                           _ln(rng, 15000, 1.05) * _inflation(year, 0.08), 0,
+                                           p["liability_limit"], 180, 0.7))
+        if cause in ("rollover", "vehcollision", "fixedobjcoll") and rng.random() < (0.35 if cause == "rollover" else 0.08):
+            exps.append(self._exposure("MedPay", cov_med, "insured", _ln(rng, 3200, 0.8), 0, 10000, 60))
+        if cause == "rollover" and fault == "1" and rng.random() < 0.3:
+            exps.append(self._exposure("BodilyInjuryDamage", cov_liab, "third_party",
+                                       _ln(rng, 28000, 1.1) * _inflation(year, 0.08), 0,
+                                       p["liability_limit"], 220, 0.7))
+        if tag == "battery_fault" and battery_mode != "cell_failure":
+            # EV quarantine storage & high-voltage-safe towing
+            exps.append(self._exposure("TowOnly", "PATowingLaborCov" if not ba else "BATowingLaborCov",
+                                       "insured", _ln(rng, 1400, 0.5), 0, None, 20))
+        return exps, fault, tag, battery_mode
+
+    def _property_exposures(self, p, cause, cat_code, year):
+        rng = self.rng
+        hop = p["product_code"] == "HOPHomeowners"
+        limit = float(p["property_limit"] or 400000)
+        ded = float(p["deductible"])
+        infl = _inflation(year, 0.07)
+        exps, denial = [], None
+        dwell, content, ale, liab_cov = (("Dwelling", "HOPCovA"), ("Content", "HOPCovC"),
+                                         ("LivingExpenses", "HOPCovD"), "HOPCovE") if hop else \
+                                        (("PropertyDamage", "CPBldgCov"), ("Content", "CPBPPCov"),
+                                         ("LossOfUseDamage", "CPBldgBusIncomeCov"), "GLCGLCov")
+        scale = 1.0 if hop else 2.4
+        if cause == "fall":
+            exps.append(self._exposure("BodilyInjuryDamage", liab_cov, "third_party",
+                                       _ln(rng, 16000 if hop else 24000, 1.1) * _inflation(year, 0.08),
+                                       0, p["liability_limit"], 200, 0.7))
+            return exps
+        if cause == "waterdamage":
+            if cat_code and "HURR" in cat_code:
+                denial = "flood_excluded" if rng.random() < 0.35 else None
+            elif rng.random() < 0.13:
+                denial = "wear_tear_deterioration"   # long-term seepage / gradual leak
+            elif rng.random() < 0.03:
+                denial = "late_notice"
+            main = _ln(rng, 9500, 0.9) * scale
+            cycle = 60
+        elif cause == "fire":
+            main, cycle = _ln(rng, 38000, 1.25) * scale, 150
+        elif cause in ("wind", "hail"):
+            main, cycle = _ln(rng, 11500, 0.75) * scale, 55
+            if cat_code and "HURR" in cat_code:
+                main *= 2.2
+        elif cause == "burglary":
+            main, cycle = 0.0, 40
+        elif cause == "mold":
+            main, cycle = _ln(rng, 7000, 0.8) * scale, 60
+            denial = "excluded_peril" if rng.random() < 0.55 else None
+        elif cause == "vandalism":
+            main, cycle = _ln(rng, 4500, 0.8) * scale, 35
+        else:
+            main, cycle = _ln(rng, 6000, 0.8) * scale, 45
+        main *= infl
+        if main > 0:
+            exps.append(self._exposure(dwell[0], dwell[1], "insured", main, ded, limit, cycle,
+                                       0.85 if cause == "fire" else 1.0, main > 0.5 * limit, denial))
+        content_p = {"fire": 0.75, "burglary": 1.0, "waterdamage": 0.35, "wind": 0.15, "hail": 0.05,
+                     "vandalism": 0.3, "mold": 0.2}.get(cause, 0.2)
+        if rng.random() < content_p:
+            exps.append(self._exposure(content[0], content[1], "insured",
+                                       _ln(rng, 4200 if hop else 15000, 0.9) * infl * (3 if cause == "fire" else 1),
+                                       0 if main > 0 else ded, limit * 0.5, cycle, 1.0, False, denial))
+        ale_p = {"fire": 0.6, "waterdamage": 0.12, "wind": 0.08}.get(cause, 0.0)
+        if rng.random() < ale_p:
+            exps.append(self._exposure(ale[0], ale[1], "insured",
+                                       _ln(rng, 6000 if hop else 25000, 0.8) * infl, 0, limit * 0.2,
+                                       cycle + 30, 0.8, False, denial))
+        return exps
+
+    def _wc_exposures(self, p, cause, year):
+        rng = self.rng
+        infl = _inflation(year, 0.06)
+        med_median = {"strain": 2400, "fall": 3200, "struck": 2600, "cut": 1100, "caught_in": 6500,
+                      "burn_scald": 2200, "motorvehicle": 7000}[cause]
+        lost_time_p = {"strain": 0.30, "fall": 0.36, "struck": 0.25, "cut": 0.10, "caught_in": 0.55,
+                       "burn_scald": 0.25, "motorvehicle": 0.5}[cause]
+        denial = None
+        if rng.random() < 0.07:
+            denial = rng.choice(["wc_2B_preexisting_condition", "wc_1A_coming_and_going",
+                                 "wc_2D_no_medical_evidence"], p=[0.5, 0.2, 0.3])
+        lost_time = rng.random() < lost_time_p
+        exps = [self._exposure("WCInjuryDamage", "WCWorkersCompCov", "insured",
+                               _ln(rng, med_median, 1.0) * infl * (2.5 if lost_time else 1.0), 0, None,
+                               220 if lost_time else 45, 0.8 if lost_time else 1.0, False, denial)]
+        if lost_time:
+            exps.append(self._exposure("LostWages", "WCWorkersCompCov", "insured",
+                                       _ln(rng, 16000, 1.05) * infl, 0, None, 300, 0.7, False, denial))
+        return exps
+
+    # ---- lifecycle & financials ---------------------------------------------
+    def build(self, claim_idx, occ, p):
+        rng = self.rng
+        product, cause, cat_code = p["product_code"], occ.loss_cause, occ.cat_code
+        loss_date = occ.loss_date
+        year = loss_date.year
+        tag, fault, battery_mode = None, None, occ.battery_mode
+        if product in AUTO_LINES:
+            exps, fault, tag, battery_mode = self._auto_exposures(p, cause, battery_mode, year)
+        elif product == "WorkersComp":
+            exps = self._wc_exposures(p, cause, year)
+        else:
+            exps = self._property_exposures(p, cause, cat_code, year)
+        line_map = AUTO_CAUSE_TO_TAG if product in AUTO_LINES else WC_CAUSE_TO_TAG if product == "WorkersComp" else {}
+        tag = tag or line_map.get(cause) or CAUSE_TO_TAG.get(cause, cause)
+
+        # Reporting lag
+        is_injury = any(e["exposure_type"] in ("BodilyInjuryDamage", "LostWages") for e in exps)
+        lag_median = {"AUTO": 1.0, "PR": 3.0, "WC": 4.0}[LOSS_TYPE[product]]
+        if is_injury and product != "WorkersComp":
+            lag_median = 12.0
+        if battery_mode == "cell_failure":
+            lag_median = 9.0
+        if cat_code:
+            lag_median = 6.0
+        lag = int(rng.lognormal(math.log(lag_median), 1.1)) if lag_median > 0 else 0
+        if cause == "mold" or (cause == "waterdamage" and product != "PersonalAuto" and rng.random() < 0.04):
+            lag += int(rng.integers(30, 180))   # gradual losses discovered late
+        reported = loss_date + pd.Timedelta(days=lag)
+        if reported > AS_OF:
+            return None   # incurred but not reported (IBNR) at valuation date
+
+        # SIU referral
+        new_policy = int(p["term_number"]) == 1 and (loss_date - p["period_start"]).days < 60
+        siu_p = {"theftentire": 0.12, "fire": 0.08, "firedamage": 0.10, "burglary": 0.06}.get(cause, 0.02)
+        siu_p += (0.10 if lag > 30 else 0) + (0.08 if new_policy else 0)
+        siu = rng.random() < siu_p
+        fraud = siu and rng.random() < 0.22
+
+        # Litigation (claim level)
+        lit_p = 0.0
+        for e in exps:
+            if e["exposure_type"] == "BodilyInjuryDamage":
+                lit_p = max(lit_p, 0.33)
+            elif e["exposure_type"] == "LostWages":
+                lit_p = max(lit_p, 0.18)
+            elif e["denial"]:
+                lit_p = max(lit_p, 0.12)
+        lit_p = max(lit_p, 0.015)
+        litigated = rng.random() < lit_p
+
+        claim_id = f"CLM-{claim_idx:07d}"
+        claim_close = []
+        totals = dict(initial_reserve=0.0, paid_loss=0.0, paid_expense=0.0, outstanding=0.0,
+                      subro=0.0, salvage=0.0, deductible=0.0)
+        any_paid, denial_reasons, exp_rows = False, [], []
+        for k, e in enumerate(exps):
+            gross = max(e["gross_loss"], 0.0)
+            denial = e["denial"] or ("fraud_misrepresentation" if fraud else None)
+            limit = e["limit"]
+            limit_exhausted = False
+            if denial:
+                ultimate, ded_applied = 0.0, 0.0
+            else:
+                ded_applied = min(e["deductible"], gross)
+                ultimate = gross - ded_applied
+                if litigated and e["claimant_type"] == "third_party":
+                    ultimate *= 1.6
+                if limit and ultimate > limit:
+                    ultimate, limit_exhausted = float(limit), True
+            expense = _ln(rng, 180, 0.6) + (0.05 * ultimate)
+            if litigated and (e["claimant_type"] == "third_party" or denial or e["exposure_type"] == "LostWages"):
+                expense += _ln(rng, 18000, 0.8)
+            if siu:
+                expense += _ln(rng, 1500, 0.5)
+
+            cycle = e["cycle_median"] * (1.0 if not litigated else 2.8) * (1.3 if siu else 1.0)
+            if denial:
+                cycle = min(cycle, 45) * (3 if litigated else 1)
+            days_open = int(rng.lognormal(math.log(max(cycle, 3)), 0.6))
+            close = reported + pd.Timedelta(days=days_open)
+            is_closed = close <= AS_OF
+
+            initial = (gross if not denial else gross * 0.5) * e["reserve_bias"] * rng.lognormal(0, 0.3)
+            initial = max(round(initial, 2), 250.0) if gross > 0 else 0.0
+            if is_closed:
+                paid_loss, outstanding, paid_exp = ultimate, 0.0, expense
+                if denial:
+                    outcome = "fraud" if denial == "fraud_misrepresentation" else "completed"
+                else:
+                    outcome = "paymentscomplete" if ultimate > 0 else "completed"
+            else:
+                age = (AS_OF - reported).days
+                progress = min(age / max(days_open, 1), 0.95)
+                current_estimate = ultimate * rng.lognormal(math.log(max(e["reserve_bias"], 0.5) ** 0.5), 0.2)
+                paid_loss = 0.0 if denial else round(ultimate * progress * rng.uniform(0.3, 0.9), 2)
+                outstanding = max(current_estimate - paid_loss, 0.0)
+                paid_exp = expense * progress
+                outcome = None
+            # Recoveries
+            subro = 0.0
+            if e["subro_pct"] and paid_loss > 0 and is_closed and rng.random() < 0.8:
+                subro = round((paid_loss + ded_applied) * e["subro_pct"], 2)
+            salvage = round(e["salvage"], 2) if is_closed and e["total_loss"] and not denial else 0.0
+
+            if denial:
+                denial_reasons.append(denial)
+            if ultimate > 0:
+                any_paid = True
+            claim_close.append(close if is_closed else None)
+            totals["initial_reserve"] += initial
+            totals["paid_loss"] += paid_loss
+            totals["paid_expense"] += paid_exp
+            totals["outstanding"] += outstanding
+            totals["subro"] += subro
+            totals["salvage"] += salvage
+            totals["deductible"] += ded_applied
+            exp_rows.append({
+                "exposure_id": f"{claim_id}-E{k + 1}", "claim_id": claim_id,
+                "exposure_type": e["exposure_type"], "coverage_type": e["coverage_type"],
+                "claimant_type": e["claimant_type"],
+                "exposure_state": "closed" if is_closed else "open",
+                "closed_outcome": outcome, "close_date": close.normalize() if is_closed else None,
+                "initial_reserve": round(initial, 2), "paid_loss": round(paid_loss, 2),
+                "paid_expense": round(paid_exp, 2), "outstanding_reserve": round(outstanding, 2),
+                "incurred_loss": round(paid_loss + outstanding, 2),
+                "subrogation_recovery": subro, "salvage_recovery": salvage,
+                "deductible_applied": round(ded_applied, 2), "coverage_limit": limit,
+                "limit_exhausted": int(limit_exhausted), "total_loss_flag": int(e["total_loss"] and not denial),
+                "denial_reason": denial,
+            })
+
+        all_closed = all(c is not None for c in claim_close)
+        close_date = max(claim_close) if all_closed else None
+        state = "closed" if all_closed else "open"
+        if (AS_OF - reported).days <= 2 and rng.random() < 0.4:
+            state, close_date = "draft", None
+        # Reopens (supplemental payments / new treatment)
+        reopened_date = None
+        if state == "closed":
+            reopen_p = 0.06 if product == "WorkersComp" else 0.05 if is_injury else 0.025
+            if rng.random() < reopen_p:
+                reopened_date = close_date + pd.Timedelta(days=int(rng.integers(20, 240)))
+                if reopened_date > AS_OF:
+                    reopened_date = None
+                else:
+                    extra = totals["paid_loss"] * rng.uniform(0.08, 0.3)
+                    if rng.random() < 0.5:
+                        state, close_date = "open", None
+                        totals["outstanding"] += extra
+                    else:
+                        totals["paid_loss"] += extra
+                        close_date = reopened_date + pd.Timedelta(days=int(rng.integers(15, 90)))
+                        if close_date > AS_OF:
+                            state, close_date = "open", None
+                            totals["paid_loss"] -= extra
+                            totals["outstanding"] += extra
+
+        denial_reason = denial_reasons[0] if denial_reasons and not any_paid else None
+        if state == "closed":
+            if fraud:
+                closed_outcome = "fraud"
+            elif any_paid:
+                closed_outcome = "paymentscomplete"
+            else:
+                closed_outcome = "completed"
+        else:
+            closed_outcome = None
+        no_payment_reason = None
+        if state == "closed" and not any_paid:
+            if denial_reason:
+                no_payment_reason = "coverage_denied" if denial_reason != "fraud_misrepresentation" else "fraud"
+            elif totals["deductible"] > 0:
+                no_payment_reason = "below_deductible"
+            else:
+                no_payment_reason = "withdrawn"
+
+        incurred_loss = totals["paid_loss"] + totals["outstanding"]
+        segment_prefix = {"AUTO": "auto", "PR": "prop", "WC": "wc"}[LOSS_TYPE[product]]
+        if product == "WorkersComp":
+            segment = "wc_lost_time" if any(e["exposure_type"] == "LostWages" for e in exps) else "wc_med_only"
+        elif cause == "glassbreakage":
+            segment = "auto_glass"
+        elif is_injury or cause == "fall":
+            segment = "injury_low" if incurred_loss < 15000 else "injury_mid" if incurred_loss < 75000 else "injury_high"
+        else:
+            segment = f"{segment_prefix}_" + ("low" if incurred_loss < 5000 else "mid" if incurred_loss < 25000 else "high")
+
+        if siu:
+            group = "SIU"
+        elif product == "WorkersComp":
+            group = "WC Lost Time" if segment == "wc_lost_time" else "WC Medical Only"
+        elif product in AUTO_LINES:
+            group = ("Auto Injury" if is_injury else
+                     "Auto Total Loss" if any(e["total_loss"] for e in exps) else
+                     "Auto Fast Track" if incurred_loss < 2500 else "Auto Physical Damage")
+        else:
+            group = "Liability" if cause == "fall" else "Property Large Loss" if incurred_loss > 50000 else "Property Desk"
+        adjuster = f"ADJ-{''.join(w[0] for w in group.split())}-{int(rng.integers(1, ASSIGNED_GROUP_SIZE[group] + 1)):02d}"
+
+        if litigated:
+            lit_status = "complete" if state == "closed" else rng.choice(["rep", "suit_filed", "litigated"], p=[0.4, 0.35, 0.25])
+        else:
+            lit_status = "not_litigated"
+        siu_status = ("Investigation_Closed" if state == "closed" else "Under_Investigation") if siu else "No_Referral"
+
+        desc = BATTERY_DESCRIPTIONS[battery_mode] if (tag == "battery_fault" and battery_mode) else \
+            str(rng.choice(LOSS_DESCRIPTIONS.get(cause, ["Loss reported"])))
+        if tag == "battery_fault" and not battery_mode:
+            desc = BATTERY_DESCRIPTIONS["collision"]
+        location = p["state"] if rng.random() < 0.96 or product != "PersonalAuto" else str(rng.choice(STATES, p=STATE_P))
+
+        total_incurred = incurred_loss + totals["paid_expense"]
+        recoveries = totals["subro"] + totals["salvage"]
+        self.claims.append({
+            "claim_id": claim_id,
+            "claim_number": f"{LOSS_TYPE[product]}-{year}-{claim_idx:07d}",
+            "policy_id": p["policy_id"], "policy_number": p["policy_number"],
+            "product_code": product, "loss_type": LOSS_TYPE[product],
+            "loss_date": loss_date.normalize(), "reported_date": reported.normalize(),
+            "report_lag_days": lag, "close_date": close_date.normalize() if close_date is not None else None,
+            "reopened_date": reopened_date.normalize() if reopened_date is not None else None,
+            "claim_state": state, "closed_outcome": closed_outcome,
+            "loss_cause": cause, "risk_category_tag": tag, "loss_description": desc,
+            "location": location, "cat_code": cat_code, "fault_rating": fault,
+            "claim_segment": segment, "assigned_group": group, "adjuster_id": adjuster,
+            "exposure_count": len(exps),
+            "total_loss_flag": int(any(r["total_loss_flag"] for r in exp_rows)),
+            "coverage_denied_flag": int(denial_reason is not None and denial_reason != "fraud_misrepresentation"),
+            "denial_reason": denial_reason, "no_payment_reason": no_payment_reason,
+            "litigation_flag": int(litigated), "litigation_status": lit_status,
+            "siu_status": siu_status,
+            "initial_reserve": round(totals["initial_reserve"], 2),
+            "paid_loss": round(totals["paid_loss"], 2),
+            "paid_expense": round(totals["paid_expense"], 2),
+            "outstanding_reserve": round(totals["outstanding"], 2),
+            "claim_amount": round(incurred_loss, 2),       # gross incurred loss (paid + case reserve)
+            "total_incurred": round(total_incurred, 2),    # incl. allocated expense (ALAE)
+            "subrogation_amount": round(totals["subro"], 2),
+            "salvage_amount": round(totals["salvage"], 2),
+            "net_incurred": round(total_incurred - recoveries, 2),
+            "deductible_applied": round(totals["deductible"], 2),
+        })
+        self.exposures.extend(exp_rows)
+        return claim_id
+
+
+def generate_claims(rng, policies, occ):
+    builder = ClaimBuilder(rng)
+    pol_records = policies.to_dict("records")
+    idx = 0
+    for o in occ.itertuples(index=False):
+        if builder.build(idx, o, pol_records[o.policy_row]) is not None:
+            idx += 1
+    claims = pd.DataFrame(builder.claims)
+    exposures = pd.DataFrame(builder.exposures)
+    return claims, exposures
+
+
+# =========================================================================
+# Integrity checks (10_SYNTHETIC_DATA_GENERATION_RULES.md §4 + financial rules)
+# =========================================================================
+def validate_integrity(policies: pd.DataFrame, claims: pd.DataFrame, exposures: pd.DataFrame) -> None:
+    lookup = policies.set_index("policy_id")
+    ps = lookup.loc[claims["policy_id"], "period_start"].to_numpy()
+    pe = lookup.loc[claims["policy_id"], "earned_through"].to_numpy()
+    ld = claims["loss_date"].to_numpy()
+    checks = {
+        "loss_date outside policy period": ((ld < ps) | (ld > pe)).sum(),
+        "reported_date before loss_date": (claims["reported_date"] < claims["loss_date"]).sum(),
+        "dates after valuation date": ((claims["reported_date"] > AS_OF) | (claims["close_date"] > AS_OF)).sum(),
+        "closed claim without close_date": ((claims["claim_state"] == "closed") & claims["close_date"].isna()).sum(),
+        "closed claim with open reserve": ((claims["claim_state"] == "closed") & (claims["outstanding_reserve"] > 0.01)).sum(),
+        "negative financials": (claims[["paid_loss", "paid_expense", "outstanding_reserve"]] < 0).any(axis=1).sum(),
+        "incurred != paid + reserve": ((claims["claim_amount"] - claims["paid_loss"] - claims["outstanding_reserve"]).abs() > 0.05).sum(),
+        "EV battery tag on non-EV": (claims["risk_category_tag"].eq("battery_fault")
+                                     & lookup.loc[claims["policy_id"], "vehicle_powertrain"].ne("EV").to_numpy()).sum(),
+        "orphan exposures": (~exposures["claim_id"].isin(claims["claim_id"])).sum(),
     }
-    base_prem = np.array([PREMIUM_BASE.get(pc, 1600.0) for pc in product_code])
-    is_auto = np.isin(product_code, ["PersonalAuto", "BusinessAuto"])
-    age_factor = 1.0 + np.clip((vehicle_year - 2020) * 0.02, -0.12, 0.15)
-    make_factor = np.where(np.isin(vehicle_make, ["BMW", "Mercedes-Benz", "Audi", "Tesla", "Porsche"]), 1.25, 1.0)
-    auto_adjust = np.where(is_auto, age_factor * make_factor, 1.0)
-    prem_variance = rng.lognormal(mean=0.0, sigma=0.18, size=n)
-    earned_premium = np.round(np.clip(base_prem * auto_adjust * prem_variance, 450.0, 45000.0), 2)
-
-    policy_df = pd.DataFrame({
-        "policy_id":      policy_id,
-        "account_number": account_number,
-        "product_code":   product_code,
-        "policy_status":  policy_status,
-        "state":          state,
-        "period_start":   period_start,
-        "period_end":     period_end,
-        "vehicle_vin":    vehicle_vin,
-        "vehicle_year":   vehicle_year,
-        "vehicle_make":   vehicle_make,
-        "vehicle_model":  vehicle_model,
-        "earned_premium": earned_premium,
-    })
-    policy_df = policy_df.sort_values("period_start").reset_index(drop=True)
-    return policy_df
-
-
-# =========================================================================
-# CLAIMS generator  (30,000 rows)
-# =========================================================================
-def generate_claim_df(
-    policies_df: pd.DataFrame, count: int = 30_000, seed: int = 99
-) -> pd.DataFrame:
-    rng = np.random.default_rng(seed)
-    n = int(count)
-
-    # --- Pick random policies (with replacement) ---
-    policy_index = rng.integers(0, len(policies_df), size=n)
-    sel = policies_df.iloc[policy_index].reset_index(drop=True)
-
-    # --- loss_date: STRICTLY within [period_start, period_end] ---
-    p_start = sel["period_start"].values.astype("datetime64[ns]")
-    p_end   = sel["period_end"].values.astype("datetime64[ns]")
-    delta_days = ((p_end - p_start) / np.timedelta64(1, "D")).astype(np.int64)
-    # Guard: ensure at least 1-day span
-    delta_days = np.maximum(delta_days, 1)
-    loss_offsets = rng.integers(0, delta_days)  # 0 … (delta-1) inclusive
-    loss_date = p_start + (loss_offsets * np.timedelta64(1, "D"))
-
-    # --- reported_date: loss_date + random(0..14) days ---
-    reported_offsets = rng.integers(0, 15, size=n)
-    reported_date = loss_date + (reported_offsets * np.timedelta64(1, "D"))
-
-    # --- Claim state ---
-    claim_state = rng.choice(
-        np.array(CLAIM_STATES, dtype=object),
-        size=n,
-        p=np.array(CLAIM_STATE_WEIGHTS),
-    )
-
-    # --- Loss cause: Mapped realistically by Policy Product Line ---
-    PRODUCT_LOSS_CAUSES = {
-        "PersonalAuto": (
-            ["vehcollision", "rearend", "theftentire", "rollover", "fire"],
-            [0.38, 0.30, 0.16, 0.10, 0.06]
-        ),
-        "BusinessAuto": (
-            ["vehcollision", "rearend", "theftentire", "rollover", "fire"],
-            [0.38, 0.30, 0.16, 0.10, 0.06]
-        ),
-        "CommercialProperty": (
-            ["waterdamage", "fire", "slipfall", "theftentire"],
-            [0.35, 0.25, 0.25, 0.15]
-        ),
-        "HOPHomeowners": (
-            ["waterdamage", "fire", "theftentire", "slipfall"],
-            [0.45, 0.30, 0.15, 0.10]
-        ),
-        "WorkersComp": (
-            ["strain", "slipfall"],
-            [0.65, 0.35]
-        ),
-    }
-
-    loss_cause = np.empty(n, dtype=object)
-    for prod, (causes, weights) in PRODUCT_LOSS_CAUSES.items():
-        mask = sel["product_code"].values == prod
-        count_prod = int(mask.sum())
-        if count_prod > 0:
-            loss_cause[mask] = rng.choice(
-                np.array(causes, dtype=object),
-                size=count_prod,
-                p=np.array(weights)
-            )
-
-    # --- Claim amount (log-normal, realistic range) ---
-    claim_amount = np.round(
-        np.clip(
-            rng.lognormal(mean=4.9, sigma=0.85, size=n),
-            a_min=250.0,
-            a_max=400_000.0,
-        ),
-        2,
-    )
-
-    # --- Location (state code) ---
-    location = rng.choice(np.array(US_STATES, dtype=object), size=n)
-
-    # --- Close Date: Realistic cycle duration for closed claims only ---
-    # Fast-closing perils: 15-75 days; Complex perils: 45-210 days
-    is_complex_cause = np.isin(loss_cause, ["fire", "slipfall", "strain", "rollover"])
-    base_cycle_days = np.where(
-        is_complex_cause,
-        rng.integers(45, 210, size=n),
-        rng.integers(15, 75, size=n),
-    )
-    # Staggered close date calculation
-    calc_close_date = reported_date + (base_cycle_days * np.timedelta64(1, "D"))
-    close_date = np.where(claim_state == "closed", calc_close_date.astype(str), None)
-
-    # --- Initial Reserve: Realistic estimation with adverse/favorable variance ---
-    # High severity/complex claims tend to exhibit adverse development (initial < final)
-    res_factor = np.where(
-        claim_amount > 15000.0,
-        rng.uniform(0.72, 1.05, size=n),  # Higher probability of upward development
-        rng.uniform(0.85, 1.25, size=n),
-    )
-    initial_reserve = np.round(np.clip(claim_amount * res_factor, 150.0, 450000.0), 2)
-
-    # --- Litigation Flag: ~8-14% baseline, elevated for liability & high severity ---
-    lit_prob = np.where(
-        claim_amount > 20000.0,
-        0.32,
-        np.where(np.isin(loss_cause, ["slipfall", "strain", "rollover"]), 0.18, 0.05)
-    )
-    litigation_flag = (rng.random(size=n) < lit_prob).astype(int)
-
-    # --- Subrogation Amount: Only for third-party fault perils (vehcollision, rearend) ---
-    is_subro_eligible = np.isin(loss_cause, ["vehcollision", "rearend"])
-    has_subro = is_subro_eligible & (rng.random(size=n) < 0.28)
-    subro_ratio = rng.uniform(0.35, 0.75, size=n)
-    subrogation_amount = np.where(has_subro, np.round(claim_amount * subro_ratio, 2), 0.0)
-
-    # --- Claim ID: CLM-SYN-{3}-{2}-{6} ---
-    claim_id = np.array(
-        [
-            f"CLM-SYN-{i // 10_000_000:03d}-"
-            f"{(i % 10_000_000) // 100_000:02d}-"
-            f"{i % 100_000:06d}"
-            for i in range(n)
-        ],
-        dtype=object,
-    )
-
-    claims_df = pd.DataFrame({
-        "claim_id":           claim_id,
-        "policy_id":          sel["policy_id"].values,
-        "product_code":       sel["product_code"].values,
-        "loss_date":          loss_date,
-        "reported_date":      reported_date,
-        "close_date":         close_date,
-        "claim_state":        claim_state,
-        "loss_cause":         loss_cause,
-        "claim_amount":       claim_amount,
-        "initial_reserve":    initial_reserve,
-        "litigation_flag":     litigation_flag,
-        "subrogation_amount": subrogation_amount,
-        "location":           location,
-    })
-
-    # CUSTOM EXTENSION FIELD — not a native Guidewire field, modeled on
-    # the .etx extension pattern documented in our Entity Extension Guide
-    claims_df["risk_category_tag"] = claims_df["loss_cause"].copy()
-
-    return claims_df
-
-
-# =========================================================================
-# GENERIC pattern-injection function
-# =========================================================================
-def apply_engineered_pattern(
-    claims_df: pd.DataFrame, pattern: dict
-) -> pd.DataFrame:
-    """Apply ONE engineered pattern to the claims DataFrame.
-
-    This function is fully generic — it reads pattern configuration from the
-    *pattern* dict and contains NO references to any specific tag value,
-    product name, or domain concept.  All domain knowledge is externalised
-    in the ENGINEERED_PATTERNS config list.
-    """
-    df = claims_df.copy()
-    pattern_type = pattern.get("type")
-
-    if pattern_type == "time_trend":
-        # Overwrite risk_category_tag on enough rows so the TOTAL rate
-        # for the tag_value reaches the yearly target.  Accounts for
-        # rows that already carry the tag from base assignment.
-        yearly_targets = pattern.get("yearly_targets", {})
-        eligible = pattern.get("eligible_loss_causes")
-
-        for year, target_rate in yearly_targets.items():
-            year_mask = df["loss_date"].dt.year == int(year)
-            if eligible:
-                year_mask = year_mask & df["loss_cause"].isin(eligible)
-            pool = df.index[year_mask].to_numpy()
-            if pool.size == 0:
-                continue
-            # How many should carry the tag in total?
-            desired = max(1, int(np.round(pool.size * target_rate)))
-            # How many already do?
-            already = int(
-                (df.loc[pool, "risk_category_tag"] == pattern["tag_value"]).sum()
-            )
-            needed = desired - already
-            if needed <= 0:
-                continue
-            # Only flip rows that don't yet have the tag
-            flippable = pool[
-                df.loc[pool, "risk_category_tag"] != pattern["tag_value"]
-            ]
-            if flippable.size == 0:
-                continue
-            flip_count = min(needed, flippable.size)
-            selected = RNG.choice(flippable, size=flip_count, replace=False)
-            df.loc[selected, "risk_category_tag"] = pattern["tag_value"]
-
-    elif pattern_type == "geographic_skew":
-        # Boost occurrence of tag_value in a specific location by multiplier.
-        target_location = pattern.get("location")
-        if target_location is None:
-            return df
-        loc_mask = df["location"] == target_location
-        loc_idx = df.index[loc_mask].to_numpy()
-        if loc_idx.size == 0:
-            return df
-        baseline_rate = (
-            df["risk_category_tag"] == pattern["tag_value"]
-        ).mean()
-        boosted_rate = min(
-            1.0, baseline_rate * float(pattern.get("multiplier", 1.0))
-        )
-        sel_count = max(1, int(np.floor(loc_idx.size * boosted_rate)))
-        sel_count = min(sel_count, loc_idx.size)
-        selected = RNG.choice(loc_idx, size=sel_count, replace=False)
-        df.loc[selected, "risk_category_tag"] = pattern["tag_value"]
-
-    elif pattern_type == "segment_skew":
-        # Boost occurrence of tag_value in a specific segment by multiplier.
-        # Optional: restrict candidates to specific loss_cause values via
-        # "eligible_loss_causes" in the config.
-        seg_field = pattern.get("segment_field")
-        seg_value = pattern.get("segment_value")
-        if not seg_field or seg_value is None:
-            return df
-        seg_mask = df[seg_field] == seg_value
-        eligible = pattern.get("eligible_loss_causes")
-        if eligible:
-            seg_mask = seg_mask & df["loss_cause"].isin(eligible)
-        seg_idx = df.index[seg_mask].to_numpy()
-        if seg_idx.size == 0:
-            return df
-        baseline_rate = (
-            df["risk_category_tag"] == pattern["tag_value"]
-        ).mean()
-        boosted_rate = min(
-            1.0, baseline_rate * float(pattern.get("multiplier", 1.0))
-        )
-        sel_count = max(1, int(np.floor(seg_idx.size * boosted_rate)))
-        sel_count = min(sel_count, seg_idx.size)
-        selected = RNG.choice(seg_idx, size=sel_count, replace=False)
-        df.loc[selected, "risk_category_tag"] = pattern["tag_value"]
-
-    elif pattern_type == "value_bias":
-        # Generic rate-based tag assignment on rows where a given field is
-        # non-null (extensibility hook for future patterns).
-        factor_field = pattern.get("field")
-        if factor_field is None:
-            return df
-        candidates = df.index[df[factor_field].notna()].to_numpy()
-        if candidates.size == 0:
-            return df
-        sel_count = max(
-            1, int(np.floor(candidates.size * float(pattern.get("rate", 0.1))))
-        )
-        selected = RNG.choice(candidates, size=sel_count, replace=False)
-        df.loc[selected, "risk_category_tag"] = pattern["tag_value"]
-
-    return df
-
-
-# =========================================================================
-# Verification helpers
-# =========================================================================
-def _summarize_pattern(claims_df: pd.DataFrame, pattern: dict) -> dict:
-    """Re-derive actual metrics from the generated data for one pattern."""
-    ptype = pattern.get("type")
-    tag   = pattern.get("tag_value")
-    info: dict = {"type": ptype, "tag_value": tag}
-
-    if ptype == "time_trend":
-        eligible = pattern.get("eligible_loss_causes")
-        yearly = {}
-        for year, target in pattern.get("yearly_targets", {}).items():
-            ym = claims_df["loss_date"].dt.year == int(year)
-            if eligible:
-                ym = ym & claims_df["loss_cause"].isin(eligible)
-            total = int(ym.sum())
-            hits  = int((ym & (claims_df["risk_category_tag"] == tag)).sum())
-            actual = hits / total if total else 0.0
-            yearly[int(year)] = {
-                "target": target, "actual": round(actual, 4),
-                "hits": hits, "total": total,
-            }
-        info["yearly"] = yearly
-
-    elif ptype == "geographic_skew":
-        loc = pattern.get("location")
-        in_loc  = claims_df["location"] == loc
-        out_loc = ~in_loc
-        in_total  = int(in_loc.sum())
-        out_total = int(out_loc.sum())
-        in_hits   = int((in_loc & (claims_df["risk_category_tag"] == tag)).sum())
-        out_hits  = int((out_loc & (claims_df["risk_category_tag"] == tag)).sum())
-        in_rate   = in_hits / in_total if in_total else 0.0
-        out_rate  = out_hits / out_total if out_total else 0.0
-        actual_mult = in_rate / out_rate if out_rate else float("inf")
-        info["location"] = loc
-        info["in_rate"]  = round(in_rate, 4)
-        info["out_rate"] = round(out_rate, 4)
-        info["actual_multiplier"] = round(actual_mult, 2)
-
-    elif ptype == "segment_skew":
-        sf = pattern.get("segment_field")
-        sv = pattern.get("segment_value")
-        in_seg  = claims_df[sf] == sv
-        out_seg = ~in_seg
-        in_total  = int(in_seg.sum())
-        out_total = int(out_seg.sum())
-        in_hits   = int((in_seg & (claims_df["risk_category_tag"] == tag)).sum())
-        out_hits  = int((out_seg & (claims_df["risk_category_tag"] == tag)).sum())
-        in_rate   = in_hits / in_total if in_total else 0.0
-        out_rate  = out_hits / out_total if out_total else 0.0
-        actual_mult = in_rate / out_rate if out_rate else float("inf")
-        info["segment"] = f"{sf}={sv}"
-        info["in_rate"]  = round(in_rate, 4)
-        info["out_rate"] = round(out_rate, 4)
-        info["actual_multiplier"] = round(actual_mult, 2)
-
-    return info
-
-
-def validate_integrity(
-    policies_df: pd.DataFrame, claims_df: pd.DataFrame
-) -> None:
-    """Enforce verified temporal integrity rules from §4 of
-    10_SYNTHETIC_DATA_GENERATION_RULES.md:
-      - loss_date >= period_start AND loss_date <= period_end
-      - reported_date >= loss_date
-    """
-    lookup = policies_df.set_index("policy_id")
-    p_start = lookup.loc[claims_df["policy_id"], "period_start"].values
-    p_end   = lookup.loc[claims_df["policy_id"], "period_end"].values
-
-    bad_loss = (
-        (claims_df["loss_date"].values < p_start)
-        | (claims_df["loss_date"].values > p_end)
-    )
-    if bad_loss.any():
-        raise ValueError(
-            f"INTEGRITY VIOLATION: {int(bad_loss.sum())} claims have "
-            f"loss_date outside their policy period."
-        )
-
-    bad_reported = claims_df["reported_date"].values < claims_df["loss_date"].values
-    if bad_reported.any():
-        raise ValueError(
-            f"INTEGRITY VIOLATION: {int(bad_reported.sum())} claims have "
-            f"reported_date before loss_date."
-        )
-
-    print("[OK]  All temporal integrity checks passed.")
+    bad = {k: int(v) for k, v in checks.items() if v}
+    if bad:
+        raise ValueError(f"INTEGRITY VIOLATIONS: {bad}")
+    print("[OK]  All integrity checks passed:", ", ".join(checks))
 
 
 # =========================================================================
 # Main entry-point
 # =========================================================================
 def main() -> None:
+    rng = np.random.default_rng(SEED)
     print("=" * 72)
     print("  Roundtable -- Synthetic Insurance Data Generator")
-    print("  Guidewire PolicyCenter + ClaimCenter  (schema v10.2.1)")
+    print(f"  Guidewire PolicyCenter + ClaimCenter (schema v10.2.1), valued {AS_OF.date()}")
     print("=" * 72)
 
-    # ── Generate ──────────────────────────────────────────────────────────
-    print("\n[1/4] Generating 10,000 policies ...")
-    policies_df = generate_policy_df(count=10_000, seed=42)
+    print(f"\n[1/5] Writing {N_NEW_BUSINESS:,} new-business policies with renewals ...")
+    policies = generate_policy_df(rng)
+    print(f"      {len(policies):,} policy periods")
+    print("[2/5] Computing earned exposure by calendar year ...")
+    earned = build_earned_exposure(policies)
+    print("[3/5] Simulating loss occurrences from exposure ...")
+    occ = generate_occurrences(rng, policies)
+    print(f"      {len(occ):,} occurrences")
+    print("[4/5] Building claims, exposures and financials ...")
+    claims, exposures = generate_claims(rng, policies, occ)
+    print(f"      {len(claims):,} reported claims ({len(occ) - len(claims):,} IBNR), {len(exposures):,} exposures")
+    validate_integrity(policies, claims, exposures)
 
-    print("[2/4] Generating 30,000 claims ...")
-    claims_df = generate_claim_df(policies_df, count=30_000, seed=99)
-
-    # ── Apply engineered patterns ─────────────────────────────────────────
-    print("[3/4] Applying engineered patterns ...")
-    for pat in ENGINEERED_PATTERNS:
-        claims_df = apply_engineered_pattern(claims_df, pat)
-
-    # ── Validate ──────────────────────────────────────────────────────────
-    validate_integrity(policies_df, claims_df)
-
-    # ── Load into SQLite ──────────────────────────────────────────────────
-    print(f"[4/4] Writing to SQLite -> {DB_PATH}")
+    print(f"[5/5] Writing to SQLite -> {DB_PATH}")
+    date_cols = {"policies": ["period_start", "period_end", "cancel_date", "earned_through"],
+                 "claims": ["loss_date", "reported_date", "close_date", "reopened_date"],
+                 "exposures": ["close_date"]}
+    frames = {"policies": policies, "earned_exposure": earned, "claims": claims, "exposures": exposures}
     with sqlite3.connect(str(DB_PATH)) as conn:
-        policies_df.to_sql(
-            "policies", conn,
-            if_exists="replace", index=False,
-            method="multi", chunksize=1000,
-        )
-        claims_df.to_sql(
-            "claims", conn,
-            if_exists="replace", index=False,
-            method="multi", chunksize=1000,
-        )
+        for name, df in frames.items():
+            df = df.copy()
+            for col in date_cols.get(name, []):
+                df[col] = pd.to_datetime(df[col]).dt.strftime("%Y-%m-%d")
+            df.to_sql(name, conn, if_exists="replace", index=False, chunksize=5000)
+        conn.executescript("""
+            CREATE INDEX IF NOT EXISTS ix_claims_tag ON claims(risk_category_tag);
+            CREATE INDEX IF NOT EXISTS ix_claims_policy ON claims(policy_id);
+            CREATE INDEX IF NOT EXISTS ix_exposures_claim ON exposures(claim_id);
+            CREATE INDEX IF NOT EXISTS ix_earned_year ON earned_exposure(calendar_year, product_code);
+        """)
 
-    # ── Verification block ────────────────────────────────────────────────
+    # ── Verification summary ────────────────────────────────────────────
     print("\n" + "=" * 72)
-    print("  VERIFICATION — actual values recalculated from generated data")
+    print("  VERIFICATION -- recomputed from generated data")
     print("=" * 72)
-
-    for i, pat in enumerate(ENGINEERED_PATTERNS, 1):
-        result = _summarize_pattern(claims_df, pat)
-        print(f"\n-- Pattern {i}: {result['type']} "
-              f"(tag_value={result['tag_value']!r}) --")
-        if result["type"] == "time_trend":
-            for yr, info in result["yearly"].items():
-                print(f"   {yr}:  target={info['target']:.2%}  "
-                      f"actual={info['actual']:.2%}  "
-                      f"({info['hits']}/{info['total']})")
-        elif result["type"] == "geographic_skew":
-            print(f"   location={result['location']}  "
-                  f"in_rate={result['in_rate']:.4f}  "
-                  f"out_rate={result['out_rate']:.4f}  "
-                  f"actual_multiplier={result['actual_multiplier']}  "
-                  f"(target x{pat['multiplier']})")
-        elif result["type"] == "segment_skew":
-            print(f"   segment={result['segment']}  "
-                  f"in_rate={result['in_rate']:.4f}  "
-                  f"out_rate={result['out_rate']:.4f}  "
-                  f"actual_multiplier={result['actual_multiplier']}  "
-                  f"(target x{pat['multiplier']})")
-
-    print(f"\n  POLICIES rows: {len(policies_df):,}")
-    print(f"  CLAIMS   rows: {len(claims_df):,}")
+    claims["ay"] = pd.to_datetime(claims["loss_date"]).dt.year
+    lr = claims.groupby("product_code")["total_incurred"].sum() / earned.groupby("product_code")["earned_premium"].sum()
+    print("\n  Loss + ALAE ratio by line:", {k: f"{v:.0%}" for k, v in lr.items()})
+    ev_years = earned[earned["vehicle_powertrain"] == "EV"].groupby("calendar_year")["earned_exposure"].sum()
+    bf = claims[claims["risk_category_tag"] == "battery_fault"].groupby("ay").size()
+    print("  battery_fault claims / 1,000 EV vehicle-years by AY:",
+          {int(y): f"{bf.get(y, 0)} claims, {1000 * bf.get(y, 0) / ev_years[y]:.1f}" for y in ev_years.index})
+    print("  Median gross incurred by tag:",
+          claims[claims["claim_amount"] > 0].groupby("risk_category_tag")["claim_amount"].median().round(0).to_dict())
+    print(f"\n  POLICY PERIODS: {len(policies):,}   CLAIMS: {len(claims):,}   EXPOSURES: {len(exposures):,}")
     print("=" * 72)
 
 

@@ -12,7 +12,7 @@ Enforces core architecture rules:
 """
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
@@ -80,6 +80,10 @@ class DirectionalEstimate(BaseModel):
     basis: Optional[str] = Field(
         default=None,
         description="Summary of historical claim volumes and averages used to derive the range."
+    )
+    incident_count: Optional[int] = Field(
+        default=None,
+        description="Projected claim count behind the range (next 12 months)."
     )
 
 
@@ -194,6 +198,14 @@ class ProductBrief(BaseModel):
     recommendation: str = Field(
         ...,
         description="Strategic recommendation for the product committee (Build / Endorse / Exclude / Monitor)."
+    )
+    claims_analytics: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Full structured claims analytics behind the 11 sections (for charts); computed, never generated."
+    )
+    claims_kpis: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Headline claims metrics computed by backend.analytics (never by the LLM)."
     )
     generation_method: str = Field(
         default="anthropic_claude",

@@ -1,850 +1,667 @@
 """
 Roundtable Analytics Layer
 ==========================
-Pure-SQL + pandas analytics functions that query the existing claims and
-policies tables in roundtable.db.  No schema modifications — read-only.
+Claims-team analytics over roundtable.db (read-only). Every number the
+brief shows is computed here with pandas / SQL; the LLM never computes.
 
-Every function uses pandas.read_sql for querying so results come back as
-DataFrames, then are converted to plain dicts for API consumption.
+Conventions (how a claims / actuarial team reads these numbers):
+  - Accident year (AY)   = year of loss_date.
+  - Frequency            = claims per 1,000 earned exposure-years (vehicle,
+                           dwelling, location or employee), NOT share of claims.
+  - Exposure scope       = the lines (and, for vehicle perils, powertrains)
+                           where a risk tag actually occurs, so battery_fault
+                           is measured per EV-year, not per all-policy-year.
+  - Severity             = gross incurred loss (paid + case reserve) per claim
+                           with a payment or reserve; ALAE shown separately.
+  - Loss cost            = incurred loss per exposure-year (frequency x severity).
+  - Trend frequency      = ex-catastrophe and constant-mix across lines, so CAT
+                           events and book-mix shifts do not read as trends.
+  - The valuation-year AY is partial and immature (IBNR, open reserves);
+    it is flagged wherever it appears.
 """
 from __future__ import annotations
 
+import math
+from functools import lru_cache
+from typing import Any, Dict, List, Optional
+
+import numpy as np
 import pandas as pd
 
-from backend.database import get_connection
+from backend.database import DB_PATH, get_connection
+
+LARGE_LOSS_THRESHOLD = 100_000
+MIN_CREDIBLE_CLAIMS = 30          # per AY / per state before a rate is called credible
+GAP_DENIAL_REASONS = {            # denials that signal demand for coverage the policy does not give
+    "mechanical_breakdown_excluded", "wear_tear_deterioration", "flood_excluded", "excluded_peril",
+}
 
 
 # =========================================================================
-# 1. Year-over-year trend for any tag value
+# Data access (cached per database file version)
 # =========================================================================
-def get_claims_trend_by_tag(
-    tag_value: str, group_by: str = "year"
-) -> list[dict]:
-    """Return per-year counts and percentages for a given risk_category_tag.
+def _db_version() -> float:
+    return DB_PATH.stat().st_mtime
 
-    Works for ANY tag_value — no hardcoded values.
 
-    Returns
-    -------
-    list of {"year": int, "tag_matches": int, "total_claims": int, "pct": float}
-    """
+@lru_cache(maxsize=2)
+def _load(version: float) -> Dict[str, pd.DataFrame]:
     conn = get_connection()
     try:
-        # Pull only the two columns we need; the year is extracted in SQL
-        # so pandas gets a clean integer to group on.
-        query = """
-            SELECT
-                CAST(strftime('%Y', loss_date) AS INTEGER) AS year,
-                risk_category_tag,
-                COUNT(*) AS cnt
-            FROM claims
-            GROUP BY year, risk_category_tag
-        """
-        df = pd.read_sql(query, conn)
+        claims = pd.read_sql("SELECT * FROM claims", conn, parse_dates=["loss_date", "reported_date", "close_date", "reopened_date"])
+        exposures = pd.read_sql("SELECT * FROM exposures", conn)
+        earned = pd.read_sql(
+            "SELECT e.calendar_year, e.product_code, e.state, e.vehicle_powertrain, "
+            "p.vehicle_make, p.vehicle_model, p.vehicle_year, "
+            "SUM(e.earned_exposure) AS earned_exposure, SUM(e.earned_premium) AS earned_premium "
+            "FROM earned_exposure e JOIN policies p USING(policy_id) "
+            "GROUP BY 1,2,3,4,5,6,7", conn)
+        policies = pd.read_sql(
+            "SELECT policy_id, vehicle_make, vehicle_model, vehicle_year, vehicle_powertrain FROM policies", conn)
     finally:
         conn.close()
+    claims["ay"] = claims["loss_date"].dt.year
+    claims = claims.merge(policies, on="policy_id", how="left")
+    claims["vehicle_age"] = claims["ay"] - claims["vehicle_year"]
+    valuation = max(claims["reported_date"].max(), claims["close_date"].max())
+    return {"claims": claims, "exposures": exposures, "earned": earned, "valuation": valuation}
 
-    # Total claims per year
-    totals = df.groupby("year")["cnt"].sum().rename("total_claims")
 
-    # Matches for the requested tag per year
-    tag_df = df[df["risk_category_tag"] == tag_value]
-    matches = tag_df.set_index("year")["cnt"].rename("tag_matches")
+def _data() -> Dict[str, Any]:
+    return _load(_db_version())
 
-    # Merge and compute percentage
-    result = pd.DataFrame(totals).join(matches, how="left").fillna(0)
-    result["tag_matches"] = result["tag_matches"].astype(int)
-    result["pct"] = result["tag_matches"] / result["total_claims"]
-    result = result.reset_index()
 
-    return result.to_dict(orient="records")
+def valuation_date() -> str:
+    return _data()["valuation"].strftime("%Y-%m-%d")
+
+
+def list_tags() -> List[str]:
+    return sorted(_data()["claims"]["risk_category_tag"].dropna().unique().tolist())
+
+
+def _r(x, n=2):
+    return None if x is None or pd.isna(x) else round(float(x), n)
+
+
+def _s(x):
+    """Plain string or None (pandas NaN -> None)."""
+    return None if x is None or pd.isna(x) else str(x)
 
 
 # =========================================================================
-# 2. Location-based comparison for any tag value
+# Scope: where does a tag occur, and what exposure base measures it?
 # =========================================================================
-def get_claims_trend_by_tag_and_location(
-    tag_value: str, location: str
-) -> dict:
-    """Compare the rate of *tag_value* inside vs. outside *location*.
+def get_tag_scope(tag_value: str) -> dict:
+    d = _data()
+    c = d["claims"]
+    tc = c[c["risk_category_tag"] == tag_value]
+    if tc.empty:
+        return {"tag_value": tag_value, "has_data": False, "products": [], "powertrain": None}
+    share = tc["product_code"].value_counts(normalize=True)
+    products = share[share >= 0.01].index.tolist()
+    pts = tc["vehicle_powertrain"].dropna().unique().tolist()
+    powertrain = pts[0] if len(pts) == 1 and tc["vehicle_powertrain"].notna().all() else None
+    unit = {"PersonalAuto": "vehicle", "BusinessAuto": "vehicle", "HOPHomeowners": "dwelling",
+            "CommercialProperty": "location", "WorkersComp": "employee"}
+    units = sorted({unit[p] for p in products})
+    label = ("EV " if powertrain == "EV" else "") + "/".join(units) + "-years"
+    return {"tag_value": tag_value, "has_data": True, "products": products, "powertrain": powertrain,
+            "exposure_unit": label, "description": f"{', '.join(products)}" + (f" ({powertrain} only)" if powertrain else "")}
 
-    Returns
-    -------
-    {"location": str, "location_rate": float, "other_rate": float,
-     "multiplier": float, "location_total": int, "other_total": int}
-    """
-    conn = get_connection()
-    try:
-        query = """
-            SELECT
-                CASE WHEN location = :loc THEN 'target' ELSE 'other' END AS grp,
-                COUNT(*) AS total,
-                SUM(CASE WHEN risk_category_tag = :tag THEN 1 ELSE 0 END) AS hits
-            FROM claims
-            GROUP BY grp
-        """
-        df = pd.read_sql(query, conn, params={"loc": location, "tag": tag_value})
-    finally:
-        conn.close()
 
-    row_target = df[df["grp"] == "target"].iloc[0] if (df["grp"] == "target").any() else None
-    row_other = df[df["grp"] == "other"].iloc[0] if (df["grp"] == "other").any() else None
+def _scope_frames(tag_value: str):
+    d = _data()
+    scope = get_tag_scope(tag_value)
+    c, e = d["claims"], d["earned"]
+    base_c = c[c["product_code"].isin(scope["products"])]
+    base_e = e[e["product_code"].isin(scope["products"])]
+    if scope["powertrain"]:
+        base_c = base_c[base_c["vehicle_powertrain"] == scope["powertrain"]]
+        base_e = base_e[base_e["vehicle_powertrain"] == scope["powertrain"]]
+    tag_c = base_c[base_c["risk_category_tag"] == tag_value]
+    return scope, tag_c, base_c, base_e
 
-    loc_total = int(row_target["total"]) if row_target is not None else 0
-    loc_hits = int(row_target["hits"]) if row_target is not None else 0
-    other_total = int(row_other["total"]) if row_other is not None else 0
-    other_hits = int(row_other["hits"]) if row_other is not None else 0
 
-    loc_rate = loc_hits / loc_total if loc_total else 0.0
-    other_rate = other_hits / other_total if other_total else 0.0
-    multiplier = loc_rate / other_rate if other_rate else float("inf")
+def _severity(df: pd.DataFrame) -> pd.Series:
+    return df.loc[df["claim_amount"] > 0, "claim_amount"]
 
+
+# =========================================================================
+# 1-3. Frequency, severity and loss-cost trend by accident year
+# =========================================================================
+def get_claims_summary_stats(tag_value: str) -> dict:
+    scope, tc, bc, be = _scope_frames(tag_value)
+    allc = _data()["claims"]
+    if tc.empty:
+        return {"has_data": False, "tag_count": 0, "total_count": int(len(allc))}
+    sev = _severity(tc)
     return {
-        "location": location,
-        "location_rate": round(loc_rate, 4),
-        "other_rate": round(other_rate, 4),
-        "multiplier": round(multiplier, 2),
-        "location_total": loc_total,
-        "other_total": other_total,
+        "has_data": True,
+        "tag_value": tag_value,
+        "scope": scope["description"],
+        "exposure_unit": scope["exposure_unit"],
+        "valuation_date": valuation_date(),
+        "tag_count": int(len(tc)),
+        "total_count": int(len(allc)),
+        "scope_claim_count": int(len(bc)),
+        "share_of_scope_claims_pct": _r(100 * len(tc) / max(len(bc), 1)),
+        "open_count": int((tc["claim_state"] != "closed").sum()),
+        "closed_count": int((tc["claim_state"] == "closed").sum()),
+        "paid_loss": _r(tc["paid_loss"].sum()),
+        "outstanding_reserve": _r(tc["outstanding_reserve"].sum()),
+        "incurred_loss": _r(tc["claim_amount"].sum()),
+        "paid_expense": _r(tc["paid_expense"].sum()),
+        "recoveries": _r(tc["subrogation_amount"].sum() + tc["salvage_amount"].sum()),
+        "net_incurred": _r(tc["net_incurred"].sum()),
+        "avg_severity": _r(sev.mean()),
+        "median_severity": _r(sev.median()),
+        "frequency_per_1000": _r(1000 * len(tc) / be["earned_exposure"].sum()),
     }
 
 
-# =========================================================================
-# 3. Segment-based comparison for any tag value
-# =========================================================================
-def get_claims_trend_by_tag_and_segment(
-    tag_value: str, segment_field: str, segment_value: str
-) -> dict:
-    """Compare the rate of *tag_value* inside vs. outside a segment.
+def get_frequency_severity_trend(tag_value: str) -> list[dict]:
+    """Per accident year: claims, exposure, frequency, severity, loss cost, vs scope baseline."""
+    scope, tc, bc, be = _scope_frames(tag_value)
+    if tc.empty:
+        return []
+    val = _data()["valuation"]
+    expo = be.groupby("calendar_year")["earned_exposure"].sum()
+    # Constant-mix weights: each line's share of scope exposure over all years, so a
+    # shift in book mix between lines does not masquerade as a frequency trend.
+    expo_py = be.groupby(["product_code", "calendar_year"])["earned_exposure"].sum()
+    weights = be.groupby("product_code")["earned_exposure"].sum()
+    weights = weights / weights.sum()
+    ex_cat_py = tc[tc["cat_code"].isna()].groupby(["product_code", "ay"]).size()
 
-    *segment_field* must be a real column in the claims table (e.g.
-    ``product_code``).  The value is compared via ``= :seg_val``.
+    def mix_adjusted(ay):
+        f = 0.0
+        for prod, w in weights.items():
+            ex = expo_py.get((prod, ay), 0.0)
+            if ex > 0:
+                f += w * 1000 * ex_cat_py.get((prod, ay), 0) / ex
+        return f
 
-    Returns
-    -------
-    {"segment_field": str, "segment_value": str,
-     "segment_rate": float, "other_rate": float, "multiplier": float,
-     "segment_total": int, "other_total": int}
-    """
-    # Whitelist of columns allowed as segment_field to prevent SQL injection
-    ALLOWED_SEGMENT_FIELDS = {
-        "product_code", "claim_state", "loss_cause", "location",
-    }
-    if segment_field not in ALLOWED_SEGMENT_FIELDS:
-        raise ValueError(
-            f"segment_field must be one of {ALLOWED_SEGMENT_FIELDS}, "
-            f"got {segment_field!r}"
-        )
+    rows = []
+    for ay in sorted(expo.index):
+        t = tc[tc["ay"] == ay]
+        b = bc[bc["ay"] == ay]
+        ex = float(expo[ay])
+        sev = _severity(t)
+        t_ex_cat = t[t["cat_code"].isna()]
+        rows.append({
+            "year": int(ay),
+            "claims": int(len(t)),
+            "cat_claims": int(len(t) - len(t_ex_cat)),
+            "earned_exposure": _r(ex, 1),
+            "annualized_exposure": _r(ex * 365.25 / max(val.dayofyear, 1), 1) if ay == val.year else _r(ex, 1),
+            "frequency_per_1000": _r(1000 * len(t) / ex, 2) if ex else None,
+            "frequency_ex_cat_per_1000": _r(mix_adjusted(ay), 2) if ex else None,
+            "scope_all_cause_frequency_per_1000": _r(1000 * len(b) / ex, 2) if ex else None,
+            "avg_severity": _r(sev.mean()),
+            "median_severity": _r(sev.median()),
+            "loss_cost_per_exposure": _r(t["claim_amount"].sum() / ex) if ex else None,
+            "open_pct": _r(100 * (t["claim_state"] != "closed").mean(), 1) if len(t) else None,
+            "credible": bool(len(t) >= MIN_CREDIBLE_CLAIMS),
+            "partial_year": bool(ay == val.year),
+        })
+    return rows
 
-    conn = get_connection()
-    try:
-        # segment_field is validated above, safe to interpolate
-        query = f"""
-            SELECT
-                CASE WHEN {segment_field} = :seg_val THEN 'target'
-                     ELSE 'other' END AS grp,
-                COUNT(*) AS total,
-                SUM(CASE WHEN risk_category_tag = :tag THEN 1 ELSE 0 END) AS hits
-            FROM claims
-            GROUP BY grp
-        """
-        df = pd.read_sql(
-            query, conn, params={"seg_val": segment_value, "tag": tag_value}
-        )
-    finally:
-        conn.close()
 
-    row_target = df[df["grp"] == "target"].iloc[0] if (df["grp"] == "target").any() else None
-    row_other = df[df["grp"] == "other"].iloc[0] if (df["grp"] == "other").any() else None
-
-    seg_total = int(row_target["total"]) if row_target is not None else 0
-    seg_hits = int(row_target["hits"]) if row_target is not None else 0
-    other_total = int(row_other["total"]) if row_other is not None else 0
-    other_hits = int(row_other["hits"]) if row_other is not None else 0
-
-    seg_rate = seg_hits / seg_total if seg_total else 0.0
-    other_rate = other_hits / other_total if other_total else 0.0
-    multiplier = seg_rate / other_rate if other_rate else float("inf")
-
+def get_severity_profile(tag_value: str) -> dict:
+    scope, tc, bc, be = _scope_frames(tag_value)
+    if tc.empty:
+        return {"has_data": False}
+    sev, base_sev = _severity(tc), _severity(bc[bc["risk_category_tag"] != tag_value])
+    closed_paid = tc[(tc["claim_state"] == "closed") & (tc["paid_loss"] > 0)]["paid_loss"]
     return {
-        "segment_field": segment_field,
-        "segment_value": segment_value,
-        "segment_rate": round(seg_rate, 4),
-        "other_rate": round(other_rate, 4),
-        "multiplier": round(multiplier, 2),
-        "segment_total": seg_total,
-        "other_total": other_total,
+        "has_data": True,
+        "claims_with_loss": int(len(sev)),
+        "mean": _r(sev.mean()), "median": _r(sev.median()),
+        "p90": _r(sev.quantile(0.9)), "max": _r(sev.max()),
+        "baseline_mean": _r(base_sev.mean()), "baseline_median": _r(base_sev.median()),
+        "severity_index_vs_baseline": _r(sev.mean() / base_sev.mean()) if len(base_sev) else None,
+        "avg_paid_closed": _r(closed_paid.mean()),
+        "large_losses": int((tc["claim_amount"] >= LARGE_LOSS_THRESHOLD).sum()),
+        "large_loss_share_of_incurred_pct": _r(100 * tc.loc[tc["claim_amount"] >= LARGE_LOSS_THRESHOLD, "claim_amount"].sum()
+                                                / max(tc["claim_amount"].sum(), 1), 1),
+        "alae_ratio_pct": _r(100 * tc["paid_expense"].sum() / max(tc["claim_amount"].sum(), 1), 1),
+        "total_loss_rate_pct": _r(100 * tc["total_loss_flag"].mean(), 1),
+        "baseline_label": f"other causes in {scope['description']}",
+    }
+
+
+def get_loss_ratio_by_tag(tag_value: str) -> dict:
+    """Tag loss + ALAE as points of the scope's earned premium (not a peril loss ratio)."""
+    scope, tc, bc, be = _scope_frames(tag_value)
+    prem = float(be["earned_premium"].sum())
+    if tc.empty or prem <= 0:
+        return {"has_data": False, "status": "Insufficient evidence for loss ratio framing."}
+    tag_inc = float(tc["total_incurred"].sum())
+    scope_inc = float(bc["total_incurred"].sum())
+    by_year = []
+    ep_y = be.groupby("calendar_year")["earned_premium"].sum()
+    for ay, ep in ep_y.items():
+        by_year.append({"year": int(ay), "loss_ratio_points": _r(100 * tc.loc[tc["ay"] == ay, "total_incurred"].sum() / ep, 2)})
+    return {
+        "has_data": True,
+        "earned_premium": _r(prem),
+        "tag_incurred_with_alae": _r(tag_inc),
+        "loss_ratio_points": _r(100 * tag_inc / prem, 2),
+        "scope_loss_ratio_pct": _r(100 * scope_inc / prem, 1),
+        "by_year": by_year,
+        "status": (f"This pattern consumed {100 * tag_inc / prem:.1f} points of loss ratio on ${prem:,.0f} earned premium "
+                   f"({scope['description']}); the scope's overall loss + ALAE ratio is {100 * scope_inc / prem:.1f}%."),
     }
 
 
 # =========================================================================
-# 4. Summary statistics (overall + optional tag filter)
+# 4-5. Causes of loss and types of loss (exposure / coverage level)
 # =========================================================================
-def get_claims_summary_stats(tag_value: str = None) -> dict:
-    """Return aggregate claim statistics.
+def get_claims_loss_cause_breakdown(tag_value: str) -> list[dict]:
+    _, tc, _, _ = _scope_frames(tag_value)
+    if tc.empty:
+        return []
+    g = tc.groupby("loss_cause").agg(cnt=("claim_id", "size"), incurred=("claim_amount", "sum"),
+                                     avg=("claim_amount", "mean")).sort_values("cnt", ascending=False)
+    g["pct"] = g["cnt"] / g["cnt"].sum()
+    return [{"loss_cause": k, "cnt": int(r.cnt), "pct": _r(r.pct, 4), "incurred": _r(r.incurred), "avg_incurred": _r(r.avg)}
+            for k, r in g.iterrows()]
 
-    Always returns overall stats.  If *tag_value* is provided, also
-    returns the same three stats filtered to matching claims.
 
-    Returns
-    -------
-    {"total_count": int, "total_amount": float, "avg_amount": float,
-     "tag_count": int | None, "tag_total_amount": float | None,
-     "tag_avg_amount": float | None}
-    """
-    conn = get_connection()
-    try:
-        overall = pd.read_sql(
-            "SELECT COUNT(*) AS cnt, SUM(claim_amount) AS total, "
-            "AVG(claim_amount) AS avg FROM claims",
-            conn,
-        ).iloc[0]
+def get_loss_descriptions(tag_value: str, n: int = 5) -> list[dict]:
+    _, tc, _, _ = _scope_frames(tag_value)
+    if tc.empty:
+        return []
+    g = tc.groupby("loss_description").agg(cnt=("claim_id", "size"), avg=("claim_amount", "mean"))
+    g = g.sort_values("cnt", ascending=False).head(n)
+    return [{"description": k, "cnt": int(r.cnt), "avg_incurred": _r(r.avg)} for k, r in g.iterrows()]
 
-        result: dict = {
-            "total_count": int(overall["cnt"]),
-            "total_amount": round(float(overall["total"]), 2),
-            "avg_amount": round(float(overall["avg"]), 2),
-            "tag_count": None,
-            "tag_total_amount": None,
-            "tag_avg_amount": None,
-        }
 
-        if tag_value is not None:
-            tag_row = pd.read_sql(
-                "SELECT COUNT(*) AS cnt, SUM(claim_amount) AS total, "
-                "AVG(claim_amount) AS avg FROM claims "
-                "WHERE risk_category_tag = :tag",
-                conn,
-                params={"tag": tag_value},
-            ).iloc[0]
-            result["tag_count"] = int(tag_row["cnt"])
-            result["tag_total_amount"] = round(float(tag_row["total"]), 2)
-            result["tag_avg_amount"] = round(float(tag_row["avg"]), 2)
-    finally:
-        conn.close()
+def get_loss_type_breakdown(tag_value: str) -> dict:
+    _, tc, _, _ = _scope_frames(tag_value)
+    if tc.empty:
+        return {"has_data": False, "by_exposure": []}
+    ex = _data()["exposures"]
+    ex = ex[ex["claim_id"].isin(tc["claim_id"])]
+    g = ex.groupby(["exposure_type", "coverage_type"]).agg(
+        exposures=("exposure_id", "size"), paid=("paid_loss", "sum"), outstanding=("outstanding_reserve", "sum"),
+        incurred=("incurred_loss", "sum"), denied=("denial_reason", lambda s: s.notna().sum()),
+        total_losses=("total_loss_flag", "sum")).sort_values("incurred", ascending=False)
+    rows = [{"exposure_type": et, "coverage_type": cov, "exposures": int(r.exposures), "paid": _r(r.paid),
+             "outstanding": _r(r.outstanding), "incurred": _r(r.incurred),
+             "avg_incurred": _r(r.incurred / r.exposures), "denied": int(r.denied), "total_losses": int(r.total_losses)}
+            for (et, cov), r in g.iterrows()]
+    return {
+        "has_data": True,
+        "by_exposure": rows,
+        "paid_loss": _r(tc["paid_loss"].sum()),
+        "outstanding_reserve": _r(tc["outstanding_reserve"].sum()),
+        "incurred_loss": _r(tc["claim_amount"].sum()),
+        "paid_pct_of_incurred": _r(100 * tc["paid_loss"].sum() / max(tc["claim_amount"].sum(), 1), 1),
+        "claim_segments": tc["claim_segment"].value_counts().to_dict(),
+    }
 
+
+# =========================================================================
+# 6-7. Segments and geography (exposure-based rates)
+# =========================================================================
+def get_segment_breakdown(tag_value: str) -> dict:
+    scope, tc, bc, be = _scope_frames(tag_value)
+    if tc.empty:
+        return {"has_data": False}
+    total_freq = 1000 * len(tc) / be["earned_exposure"].sum()
+
+    def rate_table(key: str, min_claims: int = 10, top: int = 8, frame_e=None):
+        fe = be if frame_e is None else frame_e
+        cnt = tc.groupby(key).size()
+        expo = fe.groupby(key)["earned_exposure"].sum()
+        out = []
+        for k, n in cnt.items():
+            ex = float(expo.get(k, 0))
+            if ex <= 0:
+                continue
+            f = 1000 * n / ex
+            out.append({key: k if not isinstance(k, (np.integer, np.floating)) else int(k), "claims": int(n),
+                        "earned_exposure": _r(ex, 1), "frequency_per_1000": _r(f),
+                        "index_vs_avg": _r(f / total_freq), "credible": bool(n >= min_claims)})
+        out.sort(key=lambda r: (-r["credible"], -(r["index_vs_avg"] or 0)))
+        return out[:top]
+
+    result = {"has_data": True, "avg_frequency_per_1000": _r(total_freq),
+              "by_product": rate_table("product_code", 1, 10)}
+    if tc["vehicle_make"].notna().any():
+        bands = dict(bins=[-1, 2, 5, 8, 50], labels=["0-2", "3-5", "6-8", "9+"])
+        cnt = pd.cut(tc["vehicle_age"], **bands).value_counts()
+        expo = be.groupby(pd.cut(be["calendar_year"] - be["vehicle_year"], **bands), observed=False)["earned_exposure"].sum()
+        result["by_vehicle_age"] = [
+            {"vehicle_age_band": str(k), "claims": int(cnt.get(k, 0)),
+             "frequency_per_1000": _r(1000 * cnt.get(k, 0) / expo[k]),
+             "index_vs_avg": _r(1000 * cnt.get(k, 0) / expo[k] / total_freq)}
+            for k in bands["labels"] if expo.get(k, 0) > 0]
+        result["by_vehicle_model"] = rate_table("vehicle_model", 8, 8)
+        if not scope["powertrain"]:
+            result["by_powertrain"] = rate_table("vehicle_powertrain", 1, 3)
     return result
 
 
-# =========================================================================
-# 4b. Loss Cause & Claim State breakdowns for a specific tag
-# =========================================================================
-def get_claims_loss_cause_breakdown(tag_value: str) -> list[dict]:
-    """Return count and percentage breakdown of loss_cause for a given risk tag."""
-    conn = get_connection()
-    try:
-        query = """
-            SELECT loss_cause, COUNT(*) AS cnt
-            FROM claims
-            WHERE risk_category_tag = :tag
-            GROUP BY loss_cause
-            ORDER BY cnt DESC
-        """
-        df = pd.read_sql(query, conn, params={"tag": tag_value})
-        total = df["cnt"].sum() if not df.empty else 0
-        if total > 0:
-            df["pct"] = df["cnt"] / total
-        else:
-            df["pct"] = 0.0
-        return df.to_dict(orient="records")
-    finally:
-        conn.close()
-
-
-def get_claims_state_breakdown(tag_value: str) -> list[dict]:
-    """Return count and percentage breakdown of claim_state for a given risk tag."""
-    conn = get_connection()
-    try:
-        query = """
-            SELECT claim_state, COUNT(*) AS cnt
-            FROM claims
-            WHERE risk_category_tag = :tag
-            GROUP BY claim_state
-            ORDER BY cnt DESC
-        """
-        df = pd.read_sql(query, conn, params={"tag": tag_value})
-        total = df["cnt"].sum() if not df.empty else 0
-        if total > 0:
-            df["pct"] = df["cnt"] / total
-        else:
-            df["pct"] = 0.0
-        return df.to_dict(orient="records")
-    finally:
-        conn.close()
-
-
-# =========================================================================
-# 5. Proactive alert detection — generic trend scanner
-# =========================================================================
-def detect_notable_trends(
-    min_pct_change: float = 0.02, min_year_claims: int = 2000
-) -> list[dict]:
-    """Scan ALL distinct risk_category_tag values and flag any whose
-    percentage-point change from earliest to latest *substantial* year
-    exceeds *min_pct_change*.
-
-    Years with fewer than *min_year_claims* total claims are excluded
-    to avoid edge-of-range distortion (e.g. a year with only 49 claims).
-
-    No hardcoded tag list -- discovers patterns generically from the data.
-
-    Returns
-    -------
-    list of {"tag_value": str, "first_year_pct": float,
-             "last_year_pct": float, "change": float}
-    """
-    conn = get_connection()
-    try:
-        # Get all distinct tags
-        tags_df = pd.read_sql(
-            "SELECT DISTINCT risk_category_tag FROM claims", conn
-        )
-        all_tags = tags_df["risk_category_tag"].tolist()
-
-        # Pre-fetch the full year × tag pivot in one query
-        pivot_df = pd.read_sql(
-            """
-            SELECT
-                CAST(strftime('%Y', loss_date) AS INTEGER) AS year,
-                risk_category_tag,
-                COUNT(*) AS cnt
-            FROM claims
-            GROUP BY year, risk_category_tag
-            """,
-            conn,
-        )
-        totals = pd.read_sql(
-            """
-            SELECT
-                CAST(strftime('%Y', loss_date) AS INTEGER) AS year,
-                COUNT(*) AS total
-            FROM claims
-            GROUP BY year
-            """,
-            conn,
-        )
-    finally:
-        conn.close()
-
-    totals = totals.set_index("year")["total"]
-    # Drop years with too few claims (edge-of-range noise)
-    totals = totals[totals >= min_year_claims]
-    notable: list[dict] = []
-
-    for tag in all_tags:
-        tag_counts = (
-            pivot_df[pivot_df["risk_category_tag"] == tag]
-            .set_index("year")["cnt"]
-        )
-        # Compute pct per year
-        years = sorted(totals.index)
-        if len(years) < 2:
+def get_geographic_breakdown(tag_value: str, top: int = 8) -> dict:
+    _, tc, _, be = _scope_frames(tag_value)
+    if tc.empty:
+        return {"has_data": False, "states": []}
+    avg = 1000 * len(tc) / be["earned_exposure"].sum()
+    cnt = tc.groupby("location").size()
+    expo = be.groupby("state")["earned_exposure"].sum()
+    rows = []
+    for st, n in cnt.items():
+        ex = float(expo.get(st, 0))
+        if ex <= 0:
             continue
-
-        pcts = {}
-        for y in years:
-            cnt = int(tag_counts.get(y, 0))
-            tot = int(totals.get(y, 1))
-            pcts[y] = cnt / tot if tot else 0.0
-
-        first_year = years[0]
-        last_year = years[-1]
-        change = pcts[last_year] - pcts[first_year]
-
-        if abs(change) >= min_pct_change:
-            notable.append({
-                "tag_value": tag,
-                "first_year": first_year,
-                "first_year_pct": round(pcts[first_year], 4),
-                "last_year": last_year,
-                "last_year_pct": round(pcts[last_year], 4),
-                "change": round(change, 4),
-            })
-
-    # Sort by absolute change descending — biggest movers first
-    notable.sort(key=lambda x: abs(x["change"]), reverse=True)
-    return notable
-
-
-# =========================================================================
-# 6. Segment-filtered trend detection
-# =========================================================================
-def detect_notable_trends_by_segment(
-    segment_field: str,
-    segment_value: str,
-    min_pct_change: float = 0.05,
-    min_year_claims: int = 100,
-) -> list[dict]:
-    """Same generic year-over-year scan as detect_notable_trends(), but
-    first filters claims to only rows where *segment_field* == *segment_value*.
-
-    This lets you ask: "within HOPHomeowners claims, which tags are
-    trending?" — without hardcoding any tag names.
-
-    *min_year_claims* is intentionally lower (100) than the global
-    detector because a single segment has far fewer rows per year.
-
-    Returns
-    -------
-    list of {"tag_value": str, "first_year": int, "first_year_pct": float,
-             "last_year": int, "last_year_pct": float, "change": float}
-    """
-    ALLOWED_SEGMENT_FIELDS = {
-        "product_code", "claim_state", "loss_cause", "location",
+        f = 1000 * n / ex
+        rows.append({"state": st, "claims": int(n), "frequency_per_1000": _r(f), "index_vs_avg": _r(f / avg),
+                     "credible": bool(n >= MIN_CREDIBLE_CLAIMS)})
+    # Rank credible states first; with a thin book fall back to states with >= 10 claims (flagged)
+    credible = sorted([r for r in rows if r["claims"] >= 10], key=lambda r: (-r["credible"], -r["index_vs_avg"]))
+    cats = tc[tc["cat_code"].notna()].groupby("cat_code").agg(cnt=("claim_id", "size"), incurred=("claim_amount", "sum"))
+    return {
+        "has_data": True, "avg_frequency_per_1000": _r(avg),
+        "states": credible[:top],
+        "low_credibility_states": sum(1 for r in rows if not r["credible"]),
+        "cat_events": [{"cat_code": k, "claims": int(r.cnt), "incurred": _r(r.incurred)} for k, r in cats.iterrows()],
+        "cat_share_of_incurred_pct": _r(100 * tc.loc[tc["cat_code"].notna(), "claim_amount"].sum() / max(tc["claim_amount"].sum(), 1), 1),
     }
-    if segment_field not in ALLOWED_SEGMENT_FIELDS:
-        raise ValueError(
-            f"segment_field must be one of {ALLOWED_SEGMENT_FIELDS}, "
-            f"got {segment_field!r}"
-        )
-
-    conn = get_connection()
-    try:
-        # Pre-fetch year x tag counts filtered to the segment
-        query = f"""
-            SELECT
-                CAST(strftime('%Y', loss_date) AS INTEGER) AS year,
-                risk_category_tag,
-                COUNT(*) AS cnt
-            FROM claims
-            WHERE {segment_field} = :seg_val
-            GROUP BY year, risk_category_tag
-        """
-        pivot_df = pd.read_sql(query, conn, params={"seg_val": segment_value})
-
-        totals_query = f"""
-            SELECT
-                CAST(strftime('%Y', loss_date) AS INTEGER) AS year,
-                COUNT(*) AS total
-            FROM claims
-            WHERE {segment_field} = :seg_val
-            GROUP BY year
-        """
-        totals = pd.read_sql(
-            totals_query, conn, params={"seg_val": segment_value}
-        )
-    finally:
-        conn.close()
-
-    if totals.empty:
-        return []
-
-    totals = totals.set_index("year")["total"]
-    totals = totals[totals >= min_year_claims]
-    years = sorted(totals.index)
-    if len(years) < 2:
-        return []
-
-    all_tags = pivot_df["risk_category_tag"].unique().tolist()
-    notable: list[dict] = []
-
-    for tag in all_tags:
-        tag_counts = (
-            pivot_df[pivot_df["risk_category_tag"] == tag]
-            .set_index("year")["cnt"]
-        )
-        pcts = {}
-        for y in years:
-            cnt = int(tag_counts.get(y, 0))
-            tot = int(totals.get(y, 1))
-            pcts[y] = cnt / tot if tot else 0.0
-
-        first_year = years[0]
-        last_year = years[-1]
-        change = pcts[last_year] - pcts[first_year]
-
-        if abs(change) >= min_pct_change:
-            notable.append({
-                "tag_value": tag,
-                "first_year": first_year,
-                "first_year_pct": round(pcts[first_year], 4),
-                "last_year": last_year,
-                "last_year_pct": round(pcts[last_year], 4),
-                "change": round(change, 4),
-            })
-
-    notable.sort(key=lambda x: abs(x["change"]), reverse=True)
-    return notable
 
 
 # =========================================================================
-# 7. Loss Ratio Framing (Task 1)
+# 8. Coverage-gap evidence (denials, no-payment closures, limits)
 # =========================================================================
-def get_loss_ratio_by_tag(tag_value: str) -> dict:
-    """Check if policies table has a premium field and return loss ratio by tag.
-    
-    If no reliable premium-to-tag linkage exists in schema, outputs explicit
-    'Insufficient evidence' status per schema guardrail.
-    """
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute("PRAGMA table_info(policies)")
-        p_cols = [r["name"] for r in cur.fetchall()]
-        cur.execute("PRAGMA table_info(claims)")
-        c_cols = [r["name"] for r in cur.fetchall()]
-    finally:
-        conn.close()
-
-    if "earned_premium" not in p_cols and "premium" not in p_cols:
-        return {
-            "has_data": False,
-            "status": "Insufficient evidence for loss ratio framing — earned premium is not present in the current data schema.",
-            "tag_loss_share_of_segment_premium_pct": None,
-        }
-
-    conn = get_connection()
-    try:
-        # Determine relevant product line segments for this tag
-        seg_query = """
-            SELECT DISTINCT product_code
-            FROM claims
-            WHERE risk_category_tag = :tag
-        """
-        seg_df = pd.read_sql(seg_query, conn, params={"tag": tag_value})
-        relevant_prods = [p for p in seg_df["product_code"].tolist() if p]
-
-        # Incurred losses for tag
-        incurred_df = pd.read_sql(
-            "SELECT SUM(claim_amount) AS tag_incurred, COUNT(*) AS tag_claims FROM claims WHERE risk_category_tag = :tag",
-            conn,
-            params={"tag": tag_value}
-        )
-        tag_incurred = float(incurred_df["tag_incurred"].iloc[0] or 0.0)
-        tag_claims = int(incurred_df["tag_claims"].iloc[0] or 0)
-
-        # Earned premium for relevant segments
-        if relevant_prods:
-            placeholders = ",".join(f"'{p}'" for p in relevant_prods)
-            prem_query = f"SELECT SUM(earned_premium) AS total_prem FROM policies WHERE product_code IN ({placeholders})"
-            prem_df = pd.read_sql(prem_query, conn)
-            earned_prem = float(prem_df["total_prem"].iloc[0] or 0.0)
-        else:
-            prem_df = pd.read_sql("SELECT SUM(earned_premium) AS total_prem FROM policies", conn)
-            earned_prem = float(prem_df["total_prem"].iloc[0] or 0.0)
-    finally:
-        conn.close()
-
-    share_pct = (tag_incurred / earned_prem * 100.0) if earned_prem > 0 else 0.0
-    seg_names = ", ".join(relevant_prods) if relevant_prods else "All Product Lines"
-
+def get_coverage_gap_signals(tag_value: str) -> dict:
+    scope, tc, bc, _ = _scope_frames(tag_value)
+    if tc.empty:
+        return {"has_data": False}
+    closed = tc[tc["claim_state"] == "closed"]
+    base_closed = bc[(bc["claim_state"] == "closed") & (bc["risk_category_tag"] != tag_value)]
+    denied = tc[tc["coverage_denied_flag"] == 1]
+    gap = denied[denied["denial_reason"].isin(GAP_DENIAL_REASONS)]
+    ex = _data()["exposures"]
+    tex = ex[ex["claim_id"].isin(tc["claim_id"])]
+    reasons = denied.groupby("denial_reason").agg(cnt=("claim_id", "size"), est=("initial_reserve", "sum"))
     return {
         "has_data": True,
-        "tag_value": tag_value,
-        "tag_loss_share_of_segment_premium_pct": round(share_pct, 2),
-        "tag_incurred": round(tag_incurred, 2),
-        "earned_premium": round(earned_prem, 2),
-        "tag_claims": tag_claims,
-        "relevant_segments": seg_names,
-        "status": (
-            f"This risk pattern's incurred losses represent {share_pct:.2f}% of total earned premium "
-            f"across its associated product line(s) — a directional indicator of relative exposure, "
-            f"not a peril-specific actuarial loss ratio (which would require exposure-based rating data "
-            f"not present in this dataset)."
-        ),
+        "claims": int(len(tc)),
+        "denied_claims": int(len(denied)),
+        "denial_rate_pct": _r(100 * len(denied) / len(tc), 1),
+        "baseline_denial_rate_pct": _r(100 * base_closed["coverage_denied_flag"].mean(), 1) if len(base_closed) else None,
+        "gap_denials": int(len(gap)),
+        "gap_denial_rate_pct": _r(100 * len(gap) / len(tc), 1),
+        "gap_denial_estimated_loss": _r(gap["initial_reserve"].sum()),
+        "denial_reasons": [{"reason": k, "claims": int(r.cnt), "estimated_loss_at_fnol": _r(r.est)} for k, r in
+                           reasons.sort_values("cnt", ascending=False).iterrows()],
+        "closed_without_payment_pct": _r(100 * closed["no_payment_reason"].notna().mean(), 1) if len(closed) else None,
+        "baseline_closed_without_payment_pct": _r(100 * base_closed["no_payment_reason"].notna().mean(), 1) if len(base_closed) else None,
+        "no_payment_reasons": closed["no_payment_reason"].value_counts().to_dict(),
+        "limit_exhausted_exposures": int(tex["limit_exhausted"].sum()),
+        "total_losses": int(tc["total_loss_flag"].sum()),
     }
 
 
 # =========================================================================
-# 8. Litigation / Subrogation Signal (Task 2)
+# 9-10. Claim handling, reserve development, recurring & emerging signals
 # =========================================================================
+def get_claim_handling_metrics(tag_value: str) -> dict:
+    scope, tc, bc, _ = _scope_frames(tag_value)
+    if tc.empty:
+        return {"has_data": False}
+    val = _data()["valuation"]
+    base = bc[bc["risk_category_tag"] != tag_value]
+    closed = tc[tc["claim_state"] == "closed"]
+    cycle = (closed["close_date"] - closed["reported_date"]).dt.days
+    base_closed = base[base["claim_state"] == "closed"]
+    base_cycle = (base_closed["close_date"] - base_closed["reported_date"]).dt.days
+    open_ = tc[tc["claim_state"] != "closed"]
+    age = (val - open_["reported_date"]).dt.days
+    buckets = pd.cut(age, [-1, 30, 90, 180, 365, 10_000], labels=["0-30", "31-90", "91-180", "181-365", "365+"])
+    subro_elig = tc[(tc["fault_rating"] == "thirdparty") & (tc["claim_state"] == "closed") & (tc["paid_loss"] > 0)]
+    repeat = tc.groupby("policy_number").size()
+    return {
+        "has_data": True,
+        "report_lag_median_days": _r(tc["report_lag_days"].median(), 1),
+        "report_lag_p90_days": _r(tc["report_lag_days"].quantile(0.9), 1),
+        "late_reported_pct": _r(100 * (tc["report_lag_days"] > 30).mean(), 1),
+        "baseline_report_lag_median_days": _r(base["report_lag_days"].median(), 1),
+        "cycle_time_median_days": _r(cycle.median(), 1),
+        "cycle_time_p90_days": _r(cycle.quantile(0.9), 1),
+        "baseline_cycle_time_median_days": _r(base_cycle.median(), 1),
+        "open_claims": int(len(open_)),
+        "open_aging": {str(k): int(v) for k, v in buckets.value_counts().sort_index().items()},
+        "open_outstanding_reserve": _r(open_["outstanding_reserve"].sum()),
+        "reopen_rate_pct": _r(100 * tc["reopened_date"].notna().mean(), 1),
+        "baseline_reopen_rate_pct": _r(100 * base["reopened_date"].notna().mean(), 1),
+        "litigation_rate_pct": _r(100 * tc["litigation_flag"].mean(), 1),
+        "baseline_litigation_rate_pct": _r(100 * base["litigation_flag"].mean(), 1),
+        "litigation_status": tc.loc[tc["litigation_flag"] == 1, "litigation_status"].value_counts().to_dict(),
+        "siu_referral_rate_pct": _r(100 * (tc["siu_status"] != "No_Referral").mean(), 1),
+        "baseline_siu_referral_rate_pct": _r(100 * (base["siu_status"] != "No_Referral").mean(), 1),
+        "fraud_closures": int((tc["closed_outcome"] == "fraud").sum()),
+        "subrogation_recovered": _r(tc["subrogation_amount"].sum()),
+        "subrogation_recovery_rate_pct": _r(100 * subro_elig["subrogation_amount"].sum() / max(subro_elig["paid_loss"].sum(), 1), 1),
+        "salvage_recovered": _r(tc["salvage_amount"].sum()),
+        "repeat_claim_policies": int((repeat >= 2).sum()),
+        "assigned_groups": tc["assigned_group"].value_counts().to_dict(),
+    }
+
+
 def get_litigation_subrogation_summary(tag_value: str) -> dict:
-    """Check if claims table has litigation or subrogation tracking fields.
-    
-    Outputs explicit 'Insufficient evidence' if no litigation/subrogation fields exist.
-    """
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute("PRAGMA table_info(claims)")
-        cols = [r["name"] for r in cur.fetchall()]
-    finally:
-        conn.close()
+    h = get_claim_handling_metrics(tag_value)
+    if not h.get("has_data"):
+        return {"has_data": False, "status": "Insufficient evidence for litigation/subrogation signal."}
+    h["status"] = (f"Litigation rate {h['litigation_rate_pct']}% (baseline {h['baseline_litigation_rate_pct']}%); "
+                   f"subrogation recovered ${h['subrogation_recovered']:,.0f} "
+                   f"({h['subrogation_recovery_rate_pct']}% of paid on other-party-at-fault claims); "
+                   f"salvage ${h['salvage_recovered']:,.0f}.")
+    return h
 
-    lit_cols = {"litigation_status", "litigation_flag", "attorney_involved", "subrogation_amount", "recovery_amount"}
-    matched_cols = lit_cols.intersection(set(cols))
 
-    if not matched_cols or "litigation_flag" not in cols:
-        return {
-            "has_data": False,
-            "status": "Insufficient evidence for litigation/subrogation signal — no litigation or subrogation tracking field exists in the current claims schema.",
-            "litigation_pct": None,
-            "subrogation_total": None,
-        }
+def get_reserve_development(tag_value: str) -> dict:
+    """Initial (FNOL) case reserve vs current incurred. >1.0 = adverse development."""
+    _, tc, bc, _ = _scope_frames(tag_value)
+    if tc.empty:
+        return {"has_data": False}
 
-    conn = get_connection()
-    try:
-        query = """
-            SELECT
-                COUNT(*) AS total_claims,
-                SUM(CASE WHEN litigation_flag = 1 THEN 1 ELSE 0 END) AS lit_claims,
-                SUM(COALESCE(subrogation_amount, 0.0)) AS total_subro,
-                SUM(CASE WHEN COALESCE(subrogation_amount, 0.0) > 0 THEN 1 ELSE 0 END) AS subro_claims
-            FROM claims
-            WHERE risk_category_tag = :tag
-        """
-        df = pd.read_sql(query, conn, params={"tag": tag_value})
-    finally:
-        conn.close()
+    def dev(df):
+        df = df[(df["initial_reserve"] > 0) & (df["coverage_denied_flag"] == 0) & (df["no_payment_reason"].isna())]
+        if df.empty:
+            return None, None, None
+        ratio = df["claim_amount"].sum() / df["initial_reserve"].sum()
+        per = df["claim_amount"] / df["initial_reserve"]
+        return ratio, per.median(), (per > 1.25).mean()
 
-    tot = int(df["total_claims"].iloc[0] or 0)
-    lit = int(df["lit_claims"].iloc[0] or 0)
-    subro = float(df["total_subro"].iloc[0] or 0.0)
-    subro_cnt = int(df["subro_claims"].iloc[0] or 0)
-
-    lit_pct = (lit / tot * 100.0) if tot > 0 else 0.0
-
+    base = bc[bc["risk_category_tag"] != tag_value]
+    r, med, adverse = dev(tc)
+    br, bmed, badverse = dev(base)
+    by_ay = []
+    for ay, g in tc.groupby("ay"):
+        rr, _, _ = dev(g)
+        by_ay.append({"year": int(ay), "incurred_to_initial_ratio": _r(rr)})
+    direction = "adverse" if (r or 1) > 1.05 else "favorable" if (r or 1) < 0.95 else "neutral"
     return {
-        "has_data": True,
-        "tag_value": tag_value,
-        "total_claims": tot,
-        "litigation_count": lit,
-        "litigation_pct": round(lit_pct, 2),
-        "subrogation_total": round(subro, 2),
-        "subrogation_count": subro_cnt,
-        "status": f"Litigation rate is {lit_pct:.1f}% ({lit:,} claims with legal counsel/dispute). Total subrogation recoveries reached ${subro:,.2f} across {subro_cnt:,} third-party recovery claims.",
+        "has_data": r is not None,
+        "incurred_to_initial_ratio": _r(r), "median_claim_ratio": _r(med),
+        "claims_developed_over_25pct": _r(100 * (adverse or 0), 1),
+        "baseline_incurred_to_initial_ratio": _r(br), "baseline_claims_developed_over_25pct": _r(100 * (badverse or 0), 1),
+        "direction": direction, "by_year": by_ay,
     }
 
 
-# =========================================================================
-# 9. Claim Cycle Time & Reserve Development (Task 3)
-# =========================================================================
 def get_cycle_time_and_reserve_development(tag_value: str) -> dict:
-    """Check if claims table has claim close dates and initial reserve amounts.
-    
-    Outputs explicit 'Insufficient evidence' if either required pair is missing.
+    h, rd = get_claim_handling_metrics(tag_value), get_reserve_development(tag_value)
+    if not h.get("has_data") or not rd.get("has_data"):
+        return {"has_data": False, "status": "Insufficient evidence for claim cycle time and reserve development."}
+    return {**rd, "cycle_time_median_days": h["cycle_time_median_days"],
+            "status": (f"Median {h['cycle_time_median_days']:.0f} days report-to-close (baseline {h['baseline_cycle_time_median_days']:.0f}); "
+                       f"incurred is {rd['incurred_to_initial_ratio']:.2f}x the FNOL reserve "
+                       f"(baseline {rd['baseline_incurred_to_initial_ratio']:.2f}x) -> {rd['direction']} development.")}
+
+
+def _credible_trend_rows(tag_value: str) -> list[dict]:
+    return [r for r in get_frequency_severity_trend(tag_value) if r["claims"] >= 10]
+
+
+def fit_frequency_trend(tag_value: str, min_claims: int = 20) -> dict:
+    """Exponential frequency trend fitted across accident years (ex-CAT, constant mix).
+
+    Weighted least squares on log(frequency) with weights = claim counts (the inverse
+    variance of a Poisson log-rate). The partial valuation year is excluded from the
+    fit because it is immature. Significance: |z| >= 2.
     """
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute("PRAGMA table_info(claims)")
-        cols = set(r["name"] for r in cur.fetchall())
-    finally:
-        conn.close()
-
-    missing_fields = []
-    if "close_date" not in cols and "claim_close_date" not in cols:
-        missing_fields.append("claim close date (close_date)")
-    if "initial_reserve" not in cols and "reserve_initial" not in cols:
-        missing_fields.append("initial reserve amount (initial_reserve)")
-
-    if missing_fields:
-        missing_str = " and ".join(missing_fields)
-        return {
-            "has_data": False,
-            "status": f"Insufficient evidence for claim cycle time and reserve development — {missing_str} are not present in the current data schema.",
-            "avg_days_to_close": None,
-            "adverse_development_pct": None,
-        }
-
-    conn = get_connection()
-    try:
-        cycle_query = """
-            SELECT
-                AVG(JULIANDAY(close_date) - JULIANDAY(loss_date)) AS avg_days,
-                COUNT(*) AS closed_count
-            FROM claims
-            WHERE risk_category_tag = :tag
-              AND close_date IS NOT NULL
-              AND claim_state = 'closed'
-        """
-        cycle_df = pd.read_sql(cycle_query, conn, params={"tag": tag_value})
-
-        res_query = """
-            SELECT
-                AVG((claim_amount - initial_reserve) * 1.0 / NULLIF(initial_reserve, 0)) * 100.0 AS avg_dev_pct,
-                COUNT(*) AS res_count
-            FROM claims
-            WHERE risk_category_tag = :tag
-              AND initial_reserve IS NOT NULL
-              AND initial_reserve > 0
-        """
-        res_df = pd.read_sql(res_query, conn, params={"tag": tag_value})
-    finally:
-        conn.close()
-
-    avg_days = float(cycle_df["avg_days"].iloc[0] or 0.0)
-    closed_cnt = int(cycle_df["closed_count"].iloc[0] or 0)
-    dev_pct = float(res_df["avg_dev_pct"].iloc[0] or 0.0)
-
-    if dev_pct > 0:
-        direction = "UPWARD"
-        direction_label = f"reserves were adjusted upward by {abs(dev_pct):.2f}% on average, indicating initial under-reserving (adverse development)"
-    elif dev_pct < 0:
-        direction = "DOWNWARD"
-        direction_label = f"reserves were adjusted downward by {abs(dev_pct):.2f}% on average, indicating initial over-reserving (favorable development)"
-    else:
-        direction = "NEUTRAL"
-        direction_label = "reserves were settled exactly at initial reserve estimates on average"
-
+    rows = [r for r in get_frequency_severity_trend(tag_value)
+            if r["claims"] >= min_claims and not r["partial_year"] and r["frequency_ex_cat_per_1000"]]
+    if len(rows) < 2:
+        return {"has_data": False, "narrative": "Insufficient credible accident years to fit a frequency trend."}
+    x = np.array([r["year"] for r in rows], dtype=float)
+    y = np.log([r["frequency_ex_cat_per_1000"] for r in rows])
+    w = np.array([r["claims"] - r["cat_claims"] for r in rows], dtype=float)
+    xm = np.sum(w * x) / w.sum()
+    ym = np.sum(w * y) / w.sum()
+    sxx = np.sum(w * (x - xm) ** 2)
+    b = np.sum(w * (x - xm) * (y - ym)) / sxx
+    se = math.sqrt(1 / sxx)
+    annual = math.exp(b) - 1
+    z = b / se
+    significant = abs(z) >= 2
     return {
-        "has_data": True,
-        "tag_value": tag_value,
-        "avg_days_to_close": round(avg_days, 1),
-        "closed_claims_count": closed_cnt,
-        "adverse_development_pct": round(dev_pct, 2),
-        "development_direction": direction,
-        "development_direction_label": direction_label,
-        "status": f"Average claim cycle time to closure is {avg_days:.1f} days ({closed_cnt:,} closed claims). Reserve development: {direction_label}.",
+        "has_data": True, "years": [int(v) for v in x], "annual_trend_pct": _r(100 * annual, 1),
+        "ci95_low_pct": _r(100 * (math.exp(b - 2 * se) - 1), 1), "ci95_high_pct": _r(100 * (math.exp(b + 2 * se) - 1), 1),
+        "z": _r(z), "significant": bool(significant),
+        "direction": ("rising" if b > 0 else "falling") if significant else "no significant trend",
+        "narrative": (f"Fitted ex-CAT frequency trend {100 * annual:+.1f}% per year over AY {int(x[0])}-{int(x[-1])} "
+                      f"(95% range {100 * (math.exp(b - 2 * se) - 1):+.1f}% to {100 * (math.exp(b + 2 * se) - 1):+.1f}%; "
+                      + ("statistically significant)." if significant else "not statistically significant)."))
     }
 
 
-# =========================================================================
-# 10. Benchmark / Urgency Framing (Task 4)
-# =========================================================================
+def detect_notable_trends(min_annual_trend: float = 0.03) -> list[dict]:
+    """Every tag with a statistically significant fitted frequency trend of at least
+    min_annual_trend per year (ex-CAT, constant mix, scope-specific exposure base)."""
+    return [dict(t) for t in _notable_trends(_db_version(), min_annual_trend)]
+
+
+@lru_cache(maxsize=8)
+def _notable_trends(version: float, min_annual_trend: float) -> tuple:
+    notable = []
+    for tag in list_tags():
+        f = fit_frequency_trend(tag)
+        if f["has_data"] and f["significant"] and abs(f["annual_trend_pct"]) >= 100 * min_annual_trend:
+            notable.append({"tag_value": tag, "annual_trend_pct": f["annual_trend_pct"], "z": f["z"],
+                            "years": f"{f['years'][0]}-{f['years'][-1]}",
+                            "direction": "UP" if f["annual_trend_pct"] > 0 else "DOWN"})
+    notable.sort(key=lambda t: -abs(t["annual_trend_pct"]))
+    return tuple(notable)
+
+
+@lru_cache(maxsize=2)
+def _all_fitted_trends(version: float) -> tuple:
+    out = []
+    for tag in list_tags():
+        f = fit_frequency_trend(tag)
+        if f["has_data"]:
+            out.append((tag, f["annual_trend_pct"]))
+    return tuple(out)
+
+
 def get_relative_growth_benchmark(tag_value: str) -> dict:
-    """Compute this tag's year-over-year growth rate vs the AVERAGE year-over-year
-    growth rate across tracked pattern tags, returning the ratio.
-    """
-    TRACKED_TAGS = [
-        "battery_fault", "theftentire", "waterdamage", "slipfall",
-        "strain", "fire", "rollover", "vehcollision"
-    ]
-    
-    conn = get_connection()
-    try:
-        query = """
-            SELECT
-                CAST(strftime('%Y', loss_date) AS INTEGER) AS year,
-                risk_category_tag,
-                COUNT(*) AS cnt
-            FROM claims
-            GROUP BY year, risk_category_tag
-        """
-        df = pd.read_sql(query, conn)
-        totals = pd.read_sql(
-            """
-            SELECT
-                CAST(strftime('%Y', loss_date) AS INTEGER) AS year,
-                COUNT(*) AS total
-            FROM claims
-            GROUP BY year
-            """,
-            conn
-        ).set_index("year")["total"]
-    finally:
-        conn.close()
-
-    years = sorted(totals.index)
-    if len(years) < 2:
-        return {
-            "has_data": False,
-            "status": "Insufficient historical years to calculate relative growth benchmark.",
-            "tag_growth_rate": 0.0,
-            "benchmark_avg_growth_rate": 0.0,
-            "multiplier": 1.0,
-            "narrative": "Insufficient historical years to calculate relative growth benchmark."
-        }
-
-    first_year = years[0]
-    last_year = years[-1]
-    
-    tag_growths = {}
-    for t in TRACKED_TAGS:
-        t_counts = df[df["risk_category_tag"] == t].set_index("year")["cnt"]
-        p_first = (int(t_counts.get(first_year, 0)) / totals.get(first_year, 1))
-        p_last = (int(t_counts.get(last_year, 0)) / totals.get(last_year, 1))
-        if p_first > 0:
-            growth = (p_last - p_first) / p_first
-        else:
-            growth = 0.0
-        tag_growths[t] = growth
-
-    target_growth = tag_growths.get(tag_value)
-    if target_growth is None:
-        t_counts = df[df["risk_category_tag"] == tag_value].set_index("year")["cnt"]
-        p_first = (int(t_counts.get(first_year, 0)) / totals.get(first_year, 1))
-        p_last = (int(t_counts.get(last_year, 0)) / totals.get(last_year, 1))
-        target_growth = (p_last - p_first) / p_first if p_first > 0 else 0.0
-
-    avg_tracked_growth = sum(tag_growths.values()) / len(tag_growths) if tag_growths else 0.0
-    
-    if avg_tracked_growth > 0:
-        multiplier = round(target_growth / avg_tracked_growth, 2)
-    elif avg_tracked_growth < 0 and target_growth > 0:
-        multiplier = round(abs(target_growth / avg_tracked_growth), 2)
-    else:
-        multiplier = 1.0
-
-    if target_growth > avg_tracked_growth and multiplier > 1.0:
-        narrative = f"This risk pattern is growing {multiplier:.1f}x faster than the average tracked pattern baseline ({target_growth:+.1%} vs {avg_tracked_growth:+.1%} benchmark average across {first_year}–{last_year})."
-    elif target_growth < avg_tracked_growth:
-        narrative = f"This risk pattern growth ({target_growth:+.1%}) is pacing below or in line with the tracked benchmark average ({avg_tracked_growth:+.1%} across {first_year}–{last_year})."
-    else:
-        narrative = f"This risk pattern is growing at {target_growth:+.1%}, matching the portfolio benchmark average across {first_year}–{last_year}."
-
-    return {
-        "has_data": True,
-        "tag_value": tag_value,
-        "tag_growth_rate": round(target_growth, 4),
-        "benchmark_avg_growth_rate": round(avg_tracked_growth, 4),
-        "multiplier": multiplier,
-        "narrative": narrative,
-        "start_year": first_year,
-        "end_year": last_year,
-    }
+    """This tag's fitted annual frequency trend vs the average across all other tags."""
+    trends = dict(_all_fitted_trends(_db_version()))
+    if tag_value not in trends or len(trends) < 2:
+        return {"has_data": False, "narrative": "Insufficient credible accident years to benchmark frequency growth."}
+    others = [v for k, v in trends.items() if k != tag_value]
+    avg = sum(others) / len(others)
+    own = trends[tag_value]
+    rank = sorted(trends.values(), reverse=True).index(own) + 1
+    return {"has_data": True, "tag_growth_pct": own, "benchmark_avg_growth_pct": _r(avg, 1), "rank": rank,
+            "tags_compared": len(trends),
+            "narrative": (f"Fitted frequency trend {own:+.1f}%/yr vs {avg:+.1f}%/yr average across {len(trends) - 1} other "
+                          f"risk patterns (ranked #{rank} of {len(trends)} for growth).")}
 
 
-# =========================================================================
-# 11. Representative Example Claims (Task 5)
-# =========================================================================
+def get_emerging_signals(tag_value: str) -> dict:
+    rows = _credible_trend_rows(tag_value)
+    if len(rows) < 2:
+        return {"has_data": False}
+    yoy = []
+    for a, b in zip(rows, rows[1:]):
+        yoy.append({"from": a["year"], "to": b["year"],
+                    "frequency_change_pct": _r(100 * (b["frequency_ex_cat_per_1000"] / a["frequency_ex_cat_per_1000"] - 1), 1)
+                    if a["frequency_ex_cat_per_1000"] else None,
+                    "severity_change_pct": _r(100 * (b["avg_severity"] / a["avg_severity"] - 1), 1) if a["avg_severity"] and b["avg_severity"] else None,
+                    "to_partial_year": b["partial_year"]})
+    d = _data()
+    _, tc, _, _ = _scope_frames(tag_value)
+    val = d["valuation"]
+    last12 = tc[tc["loss_date"] > val - pd.DateOffset(months=12)]
+    prior12 = tc[(tc["loss_date"] <= val - pd.DateOffset(months=12)) & (tc["loss_date"] > val - pd.DateOffset(months=24))]
+    return {"has_data": True, "yoy": yoy,
+            "last_12m_claims": int(len(last12)), "prior_12m_claims": int(len(prior12)),
+            "last_12m_vs_prior_pct": _r(100 * (len(last12) / len(prior12) - 1), 1) if len(prior12) else None}
+
+
 def get_sample_claims_for_tag(tag_value: str, n: int = 3) -> list[dict]:
-    """Return n diverse real claim records for this tag across different years
-    with synthetic IDs, loss dates, amounts, causes, and states.
-    """
-    conn = get_connection()
-    try:
-        query = """
-            SELECT
-                claim_id,
-                strftime('%Y-%m-%d', loss_date) AS loss_date,
-                CAST(strftime('%Y', loss_date) AS INTEGER) AS year,
-                claim_amount,
-                loss_cause,
-                claim_state,
-                location
-            FROM claims
-            WHERE risk_category_tag = :tag
-            ORDER BY year ASC, claim_amount DESC
-        """
-        df = pd.read_sql(query, conn, params={"tag": tag_value})
-    finally:
-        conn.close()
-
-    if df.empty:
+    """Representative claims: a typical closed claim, the largest loss, and an open or denied claim."""
+    _, tc, _, _ = _scope_frames(tag_value)
+    if tc.empty:
         return []
-
-    # Pick a diverse mix across different years
-    years = sorted(df["year"].unique())
-    selected_rows = []
-
-    for y in years:
-        if len(selected_rows) >= n:
-            break
-        year_subset = df[df["year"] == y]
-        idx = len(year_subset) // 2
-        selected_rows.append(year_subset.iloc[idx].to_dict())
-
-    if len(selected_rows) < n:
-        used_ids = set(r["claim_id"] for r in selected_rows)
-        remaining = df[~df["claim_id"].isin(used_ids)]
-        if not remaining.empty:
-            for _, r in remaining.head(n - len(selected_rows)).iterrows():
-                selected_rows.append(r.to_dict())
-
-    results = []
-    for r in selected_rows[:n]:
-        results.append({
-            "claim_id": str(r["claim_id"]),
-            "claim_date": str(r["loss_date"]),
-            "year": int(r["year"]),
-            "incurred_amount": round(float(r["claim_amount"]), 2),
-            "loss_cause": str(r["loss_cause"]),
-            "claim_state": str(r["claim_state"]),
-            "location": str(r["location"]),
+    picks = []
+    closed_paid = tc[(tc["claim_state"] == "closed") & (tc["paid_loss"] > 0)].sort_values("claim_amount")
+    if len(closed_paid):
+        picks.append(("Typical closed claim", closed_paid.iloc[len(closed_paid) // 2]))
+    picks.append(("Largest loss", tc.sort_values("claim_amount").iloc[-1]))
+    denied = tc[tc["coverage_denied_flag"] == 1]
+    open_ = tc[tc["claim_state"] == "open"].sort_values("claim_amount")
+    if len(denied):
+        picks.append(("Coverage denied", denied.iloc[len(denied) // 2]))
+    elif len(open_):
+        picks.append(("Open claim", open_.iloc[len(open_) // 2]))
+    out, seen = [], set()
+    for label, r in picks:
+        if r["claim_id"] in seen:
+            continue
+        seen.add(r["claim_id"])
+        out.append({
+            "label": label, "claim_id": r["claim_number"], "claim_date": r["loss_date"].strftime("%Y-%m-%d"),
+            "year": int(r["ay"]), "location": r["location"], "loss_cause": r["loss_cause"],
+            "description": r["loss_description"], "vehicle": (f"{int(r['vehicle_year'])} {r['vehicle_make']} {r['vehicle_model']}"
+                                                              if pd.notna(r["vehicle_make"]) else None),
+            "claim_state": r["claim_state"], "incurred_amount": _r(r["claim_amount"]), "paid_loss": _r(r["paid_loss"]),
+            "outstanding_reserve": _r(r["outstanding_reserve"]), "initial_reserve": _r(r["initial_reserve"]),
+            "denial_reason": _s(r["denial_reason"]), "litigation_status": _s(r["litigation_status"]),
         })
+    return out[:n]
 
-    return results
+
+# =========================================================================
+# Everything the brief needs, in one call
+# =========================================================================
+def build_claims_analytics(tag_value: str) -> dict:
+    return {
+        "valuation_date": valuation_date(),
+        "scope": get_tag_scope(tag_value),
+        "summary": get_claims_summary_stats(tag_value),
+        "trend": get_frequency_severity_trend(tag_value),
+        "frequency_trend_fit": fit_frequency_trend(tag_value),
+        "severity": get_severity_profile(tag_value),
+        "loss_ratio": get_loss_ratio_by_tag(tag_value),
+        "loss_causes": get_claims_loss_cause_breakdown(tag_value),
+        "loss_descriptions": get_loss_descriptions(tag_value),
+        "loss_types": get_loss_type_breakdown(tag_value),
+        "segments": get_segment_breakdown(tag_value),
+        "geography": get_geographic_breakdown(tag_value),
+        "coverage_gaps": get_coverage_gap_signals(tag_value),
+        "handling": get_claim_handling_metrics(tag_value),
+        "reserve_development": get_reserve_development(tag_value),
+        "emerging": get_emerging_signals(tag_value),
+        "benchmark": get_relative_growth_benchmark(tag_value),
+        "notable_portfolio_trends": detect_notable_trends(),
+        "sample_claims": get_sample_claims_for_tag(tag_value),
+    }
 
 
 # =========================================================================
@@ -852,68 +669,7 @@ def get_sample_claims_for_tag(tag_value: str, n: int = 3) -> list[dict]:
 # =========================================================================
 if __name__ == "__main__":
     import json
+    import sys
 
-    print("=" * 72)
-    print("  Roundtable Analytics Layer -- Verification")
-    print("=" * 72)
-
-    # --- 1. battery_fault trend ---
-    print("\n[1] get_claims_trend_by_tag('battery_fault'):")
-    trend = get_claims_trend_by_tag("battery_fault")
-    for row in trend:
-        print(f"    {row['year']}: {row['tag_matches']:,} / {row['total_claims']:,}"
-              f"  = {row['pct']:.2%}")
-
-    # --- 2. theftentire in IL ---
-    print("\n[2] get_claims_trend_by_tag_and_location('theftentire', 'IL'):")
-    loc_result = get_claims_trend_by_tag_and_location("theftentire", "IL")
-    print(f"    {json.dumps(loc_result, indent=6)}")
-
-    # --- 3. slipfall in CommercialProperty ---
-    print("\n[3] get_claims_trend_by_tag_and_segment('slipfall', 'product_code', 'CommercialProperty'):")
-    seg_result = get_claims_trend_by_tag_and_segment(
-        "slipfall", "product_code", "CommercialProperty"
-    )
-    print(f"    {json.dumps(seg_result, indent=6)}")
-
-    # --- 4. Summary stats ---
-    print("\n[4] get_claims_summary_stats('battery_fault'):")
-    stats = get_claims_summary_stats("battery_fault")
-    print(f"    {json.dumps(stats, indent=6)}")
-
-    # --- 5. Proactive detection (the key test) ---
-    print("\n[5] detect_notable_trends() -- discovering ALL patterns generically:")
-    trends = detect_notable_trends()
-    if not trends:
-        print("    No notable trends detected.")
-    else:
-        for t in trends:
-            direction = "UP" if t["change"] > 0 else "DOWN"
-            print(f"    {direction:>4}  {t['tag_value']:<20s}  "
-                  f"{t['first_year']}={t['first_year_pct']:.2%} -> "
-                  f"{t['last_year']}={t['last_year_pct']:.2%}  "
-                  f"(change={t['change']:+.2%})")
-
-    # --- 6. Segment-filtered trend detection (HOPHomeowners) ---
-    print("\n[6] detect_notable_trends_by_segment('product_code', 'HOPHomeowners'):")
-    hop_trends = detect_notable_trends_by_segment(
-        "product_code", "HOPHomeowners", min_pct_change=0.02
-    )
-    if not hop_trends:
-        print("    No notable segment-specific trends detected.")
-    else:
-        for t in hop_trends:
-            direction = "UP" if t["change"] > 0 else "DOWN"
-            print(f"    {direction:>4}  {t['tag_value']:<20s}  "
-                  f"{t['first_year']}={t['first_year_pct']:.2%} -> "
-                  f"{t['last_year']}={t['last_year_pct']:.2%}  "
-                  f"(change={t['change']:+.2%})")
-
-    # --- 6b. Cross-segment proof: waterdamage rate in HOP vs others ---
-    print("\n[6b] get_claims_trend_by_tag_and_segment('waterdamage', 'product_code', 'HOPHomeowners'):")
-    hop_seg = get_claims_trend_by_tag_and_segment(
-        "waterdamage", "product_code", "HOPHomeowners"
-    )
-    print(f"    {json.dumps(hop_seg, indent=6)}")
-
-    print("\n" + "=" * 72)
+    tag = sys.argv[1] if len(sys.argv) > 1 else "battery_fault"
+    print(json.dumps(build_claims_analytics(tag), indent=2, default=str))

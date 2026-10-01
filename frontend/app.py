@@ -17,6 +17,9 @@ from typing import Any, Dict, List, Optional
 import requests
 import streamlit as st
 
+from claims_dashboard import render_claims_dashboard
+from readiness_panel import render_readiness
+
 # Backend API Base URL
 API_BASE_URL = "http://127.0.0.1:8000/api"
 
@@ -428,7 +431,7 @@ def api_create_brief(title: str, tag_value: Optional[str] = None) -> Optional[Di
         r = requests.post(
             f"{API_BASE_URL}/briefs",
             json=payload,
-            timeout=60,
+            timeout=180,
         )
         if r.status_code in (200, 201):
             return r.json()
@@ -460,6 +463,57 @@ def api_approve_claims(brief_id: int) -> bool:
         return False
 
 
+def api_save_section_note(brief_id: int, section: int, note: str) -> bool:
+    try:
+        r = requests.put(f"{API_BASE_URL}/briefs/{brief_id}/notes/{section}", json={"note": note}, timeout=4)
+        if r.status_code == 200:
+            return True
+        st.error(f"Could not save note: {r.text}")
+        return False
+    except Exception as e:
+        st.error(f"Failed to save note: {e}")
+        return False
+
+
+def render_edit_status(brief: Dict[str, Any]) -> None:
+    """Flag reviewer edits to the finding text and show what changed from the generated version."""
+    if not brief.get("claims_edited"):
+        return
+    import difflib
+
+    edited_at = (brief.get("claims_edited_at") or "")[:16].replace("T", " ")
+    st.warning(
+        f"✏️ **Finding text edited by reviewer**{f' on {edited_at} UTC' if edited_at else ''}. "
+        "The charts show the computed claims data; the edited text is the narrative that will be approved."
+    )
+    original = (brief.get("original_claims_text") or "").splitlines()
+    current = (brief.get("claims_finding_text") or "").splitlines()
+    diff = [line for line in difflib.unified_diff(original, current, "generated", "edited", lineterm="", n=1)
+            if not line.startswith(("---", "+++"))]
+    with st.expander(f"🔍 Show changes from generated version ({sum(1 for d in diff if d[:1] in '+-')} lines changed)"):
+        st.code("\n".join(diff) or "No line changes.", language="diff")
+
+
+def api_get_readiness(brief_id: int) -> Optional[Dict[str, Any]]:
+    try:
+        r = requests.get(f"{API_BASE_URL}/briefs/{brief_id}/readiness", timeout=6)
+        return r.json() if r.status_code == 200 else None
+    except Exception:
+        return None
+
+
+def api_update_readiness(brief_id: int, item_id: str, fields: Dict[str, str]) -> bool:
+    try:
+        r = requests.put(f"{API_BASE_URL}/briefs/{brief_id}/readiness/{item_id}", json=fields, timeout=6)
+        if r.status_code == 200:
+            return True
+        st.error(f"Could not save: {r.text}")
+        return False
+    except Exception as e:
+        st.error(f"Failed to save readiness item: {e}")
+        return False
+
+
 def api_reject_claims(brief_id: int) -> bool:
     try:
         r = requests.put(f"{API_BASE_URL}/briefs/{brief_id}/claims/reject", timeout=4)
@@ -467,6 +521,42 @@ def api_reject_claims(brief_id: int) -> bool:
     except Exception as e:
         st.error(f"Failed to reject claims finding: {e}")
         return False
+
+
+def render_claims_kpis(kpis: Dict[str, Any]) -> None:
+    """Headline claims metrics (computed by backend.analytics, never by the LLM)."""
+    if not kpis:
+        return
+
+    def money(v):
+        return "n/a" if v is None else f"${v:,.0f}"
+
+    def pct(v):
+        return "n/a" if v is None else f"{v:.1f}%"
+
+    st.markdown(f"#### 📋 Claims KPIs — valued {kpis.get('valuation_date', '')}")
+    st.caption(f"Scope: {kpis.get('scope')} · frequency per 1,000 {kpis.get('exposure_unit')}")
+    trend = kpis.get("frequency_trend_pct")
+    trend_label = "n/a" if trend is None else f"{trend:+.1f}%/yr" + ("" if kpis.get("frequency_trend_significant") else " (n.s.)")
+    rows = [
+        [("Claims (open)", f"{kpis.get('claims', 0):,} ({kpis.get('open_claims', 0):,})"),
+         ("Frequency / 1,000", f"{kpis.get('frequency_per_1000') or 0:.1f}"),
+         ("Fitted Frequency Trend", trend_label),
+         ("Avg Severity (index)", f"{money(kpis.get('avg_severity'))} ({kpis.get('severity_index') or 0:.2f}x)")],
+        [("Incurred (paid / reserve)", f"{money(kpis.get('incurred_loss'))}"),
+         ("Loss Ratio Points", f"{kpis.get('loss_ratio_points') or 0:.1f}"),
+         ("Denied (gap exclusions)", f"{pct(kpis.get('denial_rate_pct'))} ({pct(kpis.get('gap_denial_rate_pct'))})"),
+         ("Reserve Dev. (incurred ÷ FNOL)", f"{kpis.get('reserve_development_ratio') or 0:.2f}x")],
+        [("Median Cycle Time", f"{kpis.get('cycle_time_median_days') or 0:.0f} days"),
+         ("Litigation Rate", pct(kpis.get("litigation_rate_pct"))),
+         ("Paid Loss", money(kpis.get("paid_loss"))),
+         ("Case Reserves", money(kpis.get("outstanding_reserve")))],
+    ]
+    for row in rows:
+        cols = st.columns(len(row))
+        for col, (label, value) in zip(cols, row):
+            with col:
+                st.metric(label=label, value=value)
 
 
 # ---------------------------------------------------------------------------
@@ -560,7 +650,7 @@ st.markdown("""
 nav_col1, nav_col2, nav_col3, nav_col4, nav_col5, nav_col6 = st.columns([2.5, 1.2, 1.2, 1.4, 2.5, 1.3])
 
 with nav_col1:
-    st.markdown('<div class="navbar-brand" style="padding-top: 6px;">🛡️ <strong>Roundtable</strong></div>', unsafe_allow_html=True)
+    st.markdown('<div class="navbar-brand" style="padding-top: 6px;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1B2A4A" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -3px; margin-right: 6px;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg><strong>Roundtable</strong></div>', unsafe_allow_html=True)
 
 with nav_col2:
     if st.button("🏠 Home", key="nav_home", use_container_width=True, type=("primary" if st.session_state.current_view == "home" else "secondary")):
@@ -663,177 +753,264 @@ if st.session_state.current_view == "login":
 # VIEW: HOME LANDING PAGE
 # ===========================================================================
 elif st.session_state.current_view == "home":
-    st.markdown("""
-    <style>
-    .roundtable-hero-container {
-        background: #F4F6F9;
-        border: 1px solid #E5E9F0;
-        border-radius: 24px;
-        padding: 44px 36px 36px 36px;
-        margin: -0.5rem 0 2rem 0;
-        box-shadow: 0 10px 30px rgba(27, 42, 74, 0.04);
-    }
-    .roundtable-hero-top {
+    # SVG Line Icon Definitions (1.5-2px stroke, Enterprise Guidewire Palette)
+    icon_search = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0073C6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -2px; margin-right: 6px;"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>'
+    icon_chart = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0073C6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -2px; margin-right: 6px;"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line><line x1="3" y1="20" x2="21" y2="20"></line></svg>'
+    icon_shield = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0073C6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -2px; margin-right: 6px;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>'
+    icon_briefcase = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0073C6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -2px; margin-right: 6px;"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>'
+    icon_scale = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0073C6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -2px; margin-right: 6px;"><path d="M16 16l3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1z"></path><path d="M2 16l3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1z"></path><path d="M7 21h10"></path><path d="M12 3v18"></path><path d="M3 7h18"></path></svg>'
+    icon_globe = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0073C6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -2px; margin-right: 6px;"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>'
+
+    hero_html = f"""<style>
+.roundtable-hero-container {{
+    background: #F4F6F9;
+    border: 1px solid #E5E9F0;
+    border-radius: 16px;
+    padding: 32px 32px 32px 32px;
+    margin: 0 0 32px 0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+}}
+.roundtable-hero-layout {{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 32px;
+}}
+.roundtable-hero-content {{
+    flex: 1 1 56%;
+    max-width: 600px;
+}}
+.roundtable-hero-graphic {{
+    flex: 1 1 44%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}}
+.hero-flow-diagram {{
+    width: 100%;
+    max-width: 380px;
+    height: auto;
+}}
+.roundtable-hero-pill {{
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: #FFFFFF;
+    color: #1B2A4A;
+    border: 1px solid #E2E8F0;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    padding: 4px 16px;
+    border-radius: 100px;
+    box-shadow: 0 1px 2px rgba(27, 42, 74, 0.04);
+    margin-bottom: 16px;
+}}
+.roundtable-hero-pill .pill-dot {{
+    width: 8px;
+    height: 8px;
+    background-color: #0073C6;
+    border-radius: 50%;
+}}
+.roundtable-hero-headline {{
+    color: #1B2A4A;
+    font-size: 2.25rem;
+    font-weight: 800;
+    line-height: 1.2;
+    margin: 0 0 16px 0;
+    letter-spacing: -0.02em;
+}}
+.roundtable-hero-subheadline {{
+    color: #556275;
+    font-size: 0.98rem;
+    line-height: 1.55;
+    margin: 0 0 24px 0;
+}}
+@media (max-width: 880px) {{
+    .roundtable-hero-layout {{
+        flex-direction: column;
         text-align: center;
-        max-width: 780px;
-        margin: 0 auto 30px auto;
-    }
-    .roundtable-hero-pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        background: #FFFFFF;
-        color: #1B2A4A;
-        border: 1px solid #E2E8F0;
-        font-size: 0.78rem;
-        font-weight: 600;
-        letter-spacing: 0.03em;
-        padding: 6px 16px;
-        border-radius: 9999px;
-        box-shadow: 0 2px 8px rgba(27, 42, 74, 0.04);
-        margin-bottom: 18px;
-    }
-    .roundtable-hero-pill .pill-dot {
-        width: 7px;
-        height: 7px;
-        background-color: #0073C6;
-        border-radius: 50%;
-    }
-    .roundtable-hero-headline {
-        color: #1B2A4A;
-        font-size: 2.5rem;
-        font-weight: 800;
-        line-height: 1.18;
-        margin: 0 0 14px 0;
-        letter-spacing: -0.03em;
-    }
-    .roundtable-hero-subheadline {
-        color: #556275;
-        font-size: 1.02rem;
-        line-height: 1.6;
-        margin: 0 auto 24px auto;
-        max-width: 680px;
-    }
-    .roundtable-feature-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 18px;
-    }
-    @media (max-width: 960px) {
-        .roundtable-feature-grid {
-            grid-template-columns: repeat(2, 1fr);
-        }
-    }
-    @media (max-width: 640px) {
-        .roundtable-feature-grid {
-            grid-template-columns: 1fr;
-        }
-    }
-    .roundtable-feature-card {
-        background: #FFFFFF;
-        border: 1px solid #E8EEF5;
-        border-radius: 18px;
-        padding: 20px;
-        box-shadow: 0 4px 16px rgba(27, 42, 74, 0.03), 0 1px 3px rgba(27, 42, 74, 0.02);
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-        transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.2s ease;
-    }
-    .roundtable-feature-card:hover {
-        border-color: #CBDCEB;
-        box-shadow: 0 14px 32px -4px rgba(27, 42, 74, 0.09), 0 2px 8px rgba(0, 115, 198, 0.04);
-        transform: translateY(-4px);
-    }
-    .roundtable-card-preview {
-        background: #F8FAFC;
-        border: 1px solid #EDF2F7;
-        border-radius: 12px;
-        padding: 14px 14px;
-        margin-bottom: 16px;
-        min-height: 82px;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        gap: 8px;
-    }
-    .preview-chip-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-    }
-    .preview-chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-        background: #FFFFFF;
-        border: 1px solid #E2E8F0;
-        border-radius: 6px;
-        padding: 3px 8px;
-        font-size: 0.72rem;
-        font-weight: 600;
-        color: #1B2A4A;
-    }
-    .preview-chip.teal {
-        background: #E8F4FD;
-        border-color: #B8DCF5;
-        color: #0073C6;
-    }
-    .preview-chip.green {
-        background: #EBF8F2;
-        border-color: #C3ECD7;
-        color: #1E7E34;
-    }
-    .preview-bars {
-        display: flex;
-        align-items: flex-end;
-        gap: 5px;
-        height: 28px;
-        padding-top: 4px;
-    }
-    .preview-bar {
-        flex: 1;
-        background: #DCE6F2;
-        border-radius: 3px;
-        transition: background-color 0.2s ease;
-    }
-    .preview-bar.active {
-        background: #0073C6;
-    }
-    .roundtable-card-info {
-        padding: 0 4px;
-    }
-    .roundtable-card-title {
-        font-size: 1rem;
-        font-weight: 700;
-        color: #1B2A4A;
-        margin: 0 0 6px 0;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-    }
-    .roundtable-card-desc {
-        font-size: 0.83rem;
-        color: #64748B;
-        line-height: 1.5;
-        margin: 0;
-    }
-    </style>
-    <div class="roundtable-hero-container">
-    <div class="roundtable-hero-top">
-    <div class="roundtable-hero-pill">
-    <span class="pill-dot"></span>
-    Guidewire Pre-APD Decision Support
-    </div>
-    <div class="roundtable-hero-headline">
-    Think, validate, and decide<br>all in one place
-    </div>
-    <div class="roundtable-hero-subheadline">
-    Human-approved, cited, AI-assisted research across Claims, Actuarial, Underwriting, Competitor Intel, Regulatory, and Live Web Research — before anything reaches Guidewire APD.
-    </div>
-    </div>
-    """, unsafe_allow_html=True)
+    }}
+    .roundtable-hero-content {{
+        max-width: 100%;
+    }}
+    .roundtable-hero-pill {{
+        margin: 0 auto 16px auto;
+    }}
+}}
+.roundtable-feature-grid {{
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+}}
+@media (max-width: 960px) {{
+    .roundtable-feature-grid {{
+        grid-template-columns: repeat(2, 1fr);
+    }}
+}}
+@media (max-width: 640px) {{
+    .roundtable-feature-grid {{
+        grid-template-columns: 1fr;
+    }}
+}}
+.roundtable-feature-card {{
+    background: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 10px;
+    padding: 24px 16px 16px 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}}
+.roundtable-feature-card:hover {{
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    border-color: #CBDCEB;
+}}
+.roundtable-card-preview {{
+    background: #F8FAFC;
+    border: 1px solid #EDF2F7;
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 16px;
+    min-height: 80px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 8px;
+}}
+.preview-chip-row {{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}}
+.preview-chip {{
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 100px;
+    padding: 4px 12px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #1B2A4A;
+}}
+.preview-chip.teal {{
+    background: #E8F4FD;
+    border-color: #B8DCF5;
+    color: #0073C6;
+}}
+.preview-chip.green {{
+    background: #EBF8F2;
+    border-color: #C3ECD7;
+    color: #1E7E34;
+}}
+.preview-chip.blue-tint {{
+    background: #EDF5FC;
+    border-color: #D0E4F5;
+    color: #1B2A4A;
+}}
+.preview-bars {{
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    height: 28px;
+    padding-top: 4px;
+}}
+.preview-bar {{
+    flex: 1;
+    background: #DCE6F2;
+    border-radius: 3px;
+    transition: background-color 0.2s ease;
+}}
+.preview-bar.active {{
+    background: #0073C6;
+}}
+.roundtable-card-info {{
+    padding: 0 4px 4px 4px;
+}}
+.roundtable-card-title {{
+    font-size: 1rem;
+    font-weight: 700;
+    color: #1B2A4A;
+    margin: 0 0 8px 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}}
+.roundtable-card-desc {{
+    font-size: 0.83rem;
+    color: #556275;
+    line-height: 1.5;
+    margin: 0;
+}}
+</style>
+<div class="roundtable-hero-container">
+<div class="roundtable-hero-layout">
+<div class="roundtable-hero-content">
+<div class="roundtable-hero-pill">
+<span class="pill-dot"></span>
+Guidewire Pre-APD Decision Support
+</div>
+<div class="roundtable-hero-headline">
+Think, validate, and decide<br>all in one place
+</div>
+<div class="roundtable-hero-subheadline">
+Human-approved, cited, AI-assisted research across Claims, Actuarial, Underwriting, Competitor Intel, Regulatory, and Live Web Research — before anything reaches Guidewire APD.
+</div>
+</div>
+<div class="roundtable-hero-graphic">
+<svg class="hero-flow-diagram" viewBox="0 0 360 180" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M 85 35 C 135 35, 135 90, 175 90" stroke="#CBD5E1" stroke-width="1.75" stroke-dasharray="4 3"/>
+<path d="M 85 90 L 175 90" stroke="#CBD5E1" stroke-width="1.75"/>
+<path d="M 85 145 C 135 145, 135 90, 175 90" stroke="#CBD5E1" stroke-width="1.75" stroke-dasharray="4 3"/>
+<path d="M 255 90 L 290 90" stroke="#0073C6" stroke-width="2"/>
+<polygon points="290,86 298,90 290,94" fill="#0073C6"/>
+<circle cx="130" cy="58" r="3" fill="#0073C6"/>
+<circle cx="130" cy="122" r="3" fill="#00A9CE"/>
+<g transform="translate(10, 18)">
+<rect width="75" height="34" rx="8" fill="#FFFFFF" stroke="#0073C6" stroke-width="1.5"/>
+<circle cx="18" cy="17" r="7" fill="#E8F4FD"/>
+<circle cx="17" cy="16" r="3.2" stroke="#0073C6" stroke-width="1.2"/>
+<line x1="19.5" y1="18.5" x2="22" y2="21" stroke="#0073C6" stroke-width="1.2" stroke-linecap="round"/>
+<text x="48" y="21" font-family="-apple-system, sans-serif" font-size="10.5" font-weight="600" fill="#1B2A4A">Claims</text>
+</g>
+<g transform="translate(10, 73)">
+<rect width="75" height="34" rx="8" fill="#FFFFFF" stroke="#1B2A4A" stroke-width="1.5"/>
+<circle cx="18" cy="17" r="7" fill="#F0F4F8"/>
+<line x1="14" y1="20" x2="14" y2="16" stroke="#1B2A4A" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="18" y1="20" x2="18" y2="13" stroke="#1B2A4A" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="22" y1="20" x2="22" y2="17" stroke="#1B2A4A" stroke-width="1.2" stroke-linecap="round"/>
+<text x="48" y="21" font-family="-apple-system, sans-serif" font-size="10.5" font-weight="600" fill="#1B2A4A">Actuarial</text>
+</g>
+<g transform="translate(10, 128)">
+<rect width="75" height="34" rx="8" fill="#FFFFFF" stroke="#5A6472" stroke-width="1.5"/>
+<circle cx="18" cy="17" r="7" fill="#F8FAFC"/>
+<rect x="13" y="13" width="10" height="8" rx="1.5" stroke="#5A6472" stroke-width="1" fill="none"/>
+<path d="M16 13V11a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2" stroke="#5A6472" stroke-width="1"/>
+<text x="48" y="21" font-family="-apple-system, sans-serif" font-size="10.5" font-weight="600" fill="#1B2A4A">Market</text>
+</g>
+<g transform="translate(160, 62)">
+<rect width="95" height="56" rx="10" fill="#1B2A4A" stroke="#0073C6" stroke-width="2"/>
+<text x="47.5" y="24" font-family="-apple-system, sans-serif" font-size="10" font-weight="700" fill="#FFFFFF" text-anchor="middle" letter-spacing="0.05em">DECISION</text>
+<text x="47.5" y="38" font-family="-apple-system, sans-serif" font-size="10" font-weight="700" fill="#00A9CE" text-anchor="middle" letter-spacing="0.05em">BRIEF</text>
+<rect x="27.5" y="44" width="40" height="2.5" rx="1" fill="#0073C6"/>
+</g>
+<g transform="translate(285, 71)">
+<rect width="68" height="38" rx="8" fill="#F0F9FF" stroke="#0073C6" stroke-width="1.5"/>
+<text x="34" y="18" font-family="-apple-system, sans-serif" font-size="8.5" font-weight="700" fill="#0073C6" text-anchor="middle">GUIDEWIRE</text>
+<text x="34" y="30" font-family="-apple-system, sans-serif" font-size="10" font-weight="800" fill="#14213D" text-anchor="middle">APD</text>
+</g>
+</svg>
+</div>
+</div>
+</div>"""
+
+    st.markdown(hero_html, unsafe_allow_html=True)
 
     # Hero CTA Action Buttons
     cta_c1, cta_c2, cta_c3 = st.columns([1, 1.2, 1])
@@ -856,112 +1033,116 @@ elif st.session_state.current_view == "home":
                     st.session_state.current_view = "login"
                 st.rerun()
 
-    # Bento Feature Cards
-    st.markdown("""
-    <div style="height: 24px;"></div>
-    <div class="roundtable-feature-grid">
-    <div class="roundtable-feature-card">
-    <div class="roundtable-card-preview">
-    <div class="preview-chip-row">
-    <span class="preview-chip teal">🔍 ClaimCenter Data</span>
-    <span class="preview-chip green">Verified</span>
-    </div>
-    <div class="preview-chip-row">
-    <span class="preview-chip">Frequency & Loss Causes</span>
-    <span style="font-size: 0.70rem; color: #64748B; font-weight: 600;">SQL Synced</span>
-    </div>
-    </div>
-    <div class="roundtable-card-info">
-    <div class="roundtable-card-title">🔍 Claims Review</div>
-    <p class="roundtable-card-desc">Detects frequency, severity, loss causes, and recurring coverage gaps from internal claims history.</p>
-    </div>
-    </div>
-    <div class="roundtable-feature-card">
-    <div class="roundtable-card-preview">
-    <div class="preview-bars">
-    <div class="preview-bar" style="height: 45%;"></div>
-    <div class="preview-bar" style="height: 65%;"></div>
-    <div class="preview-bar" style="height: 85%;"></div>
-    <div class="preview-bar active" style="height: 100%;"></div>
-    <div class="preview-bar" style="height: 70%;"></div>
-    </div>
-    <div class="preview-chip-row">
-    <span class="preview-chip teal">📊 Loss Trends</span>
-    <span style="font-size: 0.70rem; color: #1B2A4A; font-weight: 700;">Directional Range</span>
-    </div>
-    </div>
-    <div class="roundtable-card-info">
-    <div class="roundtable-card-title">📊 Actuarial Review</div>
-    <p class="roundtable-card-desc">Computes pure-SQL loss trends, baseline financial ranges, and directional portfolio exposure.</p>
-    </div>
-    </div>
-    <div class="roundtable-feature-card">
-    <div class="roundtable-card-preview">
-    <div class="preview-chip-row">
-    <span class="preview-chip">Segment Exposure</span>
-    <span class="preview-chip green">Eligible</span>
-    </div>
-    <div class="preview-chip-row">
-    <span class="preview-chip teal">🛡️ Underwriting Rules</span>
-    <span style="font-size: 0.70rem; color: #64748B; font-weight: 600;">Boundaries</span>
-    </div>
-    </div>
-    <div class="roundtable-card-info">
-    <div class="roundtable-card-title">🛡️ Underwriting Review</div>
-    <p class="roundtable-card-desc">Evaluates risk eligibility, guideline boundaries, and customer segment exposure thresholds.</p>
-    </div>
-    </div>
-    <div class="roundtable-feature-card">
-    <div class="roundtable-card-preview">
-    <div class="preview-chip-row">
-    <span class="preview-chip teal">🏢 4 Peer Carriers</span>
-    <span class="preview-chip">Benchmarked</span>
-    </div>
-    <div class="preview-chip-row">
-    <span class="preview-chip">Market Policy Terms</span>
-    <span style="font-size: 0.70rem; color: #0073C6; font-weight: 600;">Gaps Found</span>
-    </div>
-    </div>
-    <div class="roundtable-card-info">
-    <div class="roundtable-card-title">🏢 Competitor Intel</div>
-    <p class="roundtable-card-desc">Benchmarks peer carrier coverages, policy terms, and market product offerings.</p>
-    </div>
-    </div>
-    <div class="roundtable-feature-card">
-    <div class="roundtable-card-preview">
-    <div class="preview-chip-row">
-    <span class="preview-chip">⚖️ 50-State Mandates</span>
-    <span class="preview-chip teal">Filing Req</span>
-    </div>
-    <div class="preview-chip-row">
-    <span class="preview-chip green">DOI Compliance</span>
-    <span style="font-size: 0.70rem; color: #64748B; font-weight: 600;">Statutory</span>
-    </div>
-    </div>
-    <div class="roundtable-card-info">
-    <div class="roundtable-card-title">⚖️ Regulatory Compliance</div>
-    <p class="roundtable-card-desc">Assesses state insurance mandates, rate filing requirements, and statutory guidelines.</p>
-    </div>
-    </div>
-    <div class="roundtable-feature-card">
-    <div class="roundtable-card-preview">
-    <div class="preview-chip-row">
-    <span class="preview-chip teal">🌐 Live Web Search</span>
-    <span class="preview-chip green">Real-Time</span>
-    </div>
-    <div class="preview-chip-row">
-    <span class="preview-chip">Cited Industry News</span>
-    <span style="font-size: 0.70rem; color: #0073C6; font-weight: 600;">External API</span>
-    </div>
-    </div>
-    <div class="roundtable-card-info">
-    <div class="roundtable-card-title">🌐 Live Web Research</div>
-    <p class="roundtable-card-desc">Discovers real-time industry news, competitor launches, and external research studies.</p>
-    </div>
-    </div>
-    </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # Bento Feature Cards with SVGs and Normalized 8px Spacing
+    grid_html = f"""<div style="height: 24px;"></div>
+<div class="roundtable-feature-grid">
+<div class="roundtable-feature-card">
+<div class="roundtable-card-preview">
+<div class="preview-chip-row">
+<span class="preview-chip teal">{icon_search} ClaimCenter Data</span>
+<span class="preview-chip green">Verified</span>
+</div>
+<div class="preview-chip-row">
+<span class="preview-chip">Frequency & Loss Causes</span>
+<span class="preview-chip blue-tint">SQL Synced</span>
+</div>
+</div>
+<div class="roundtable-card-info">
+<div class="roundtable-card-title">{icon_search} Claims Review</div>
+<p class="roundtable-card-desc">Detects frequency, severity, loss causes, and recurring coverage gaps from internal claims history.</p>
+</div>
+</div>
+
+<div class="roundtable-feature-card">
+<div class="roundtable-card-preview">
+<div class="preview-bars">
+<div class="preview-bar" style="height: 45%;"></div>
+<div class="preview-bar" style="height: 65%;"></div>
+<div class="preview-bar" style="height: 85%;"></div>
+<div class="preview-bar active" style="height: 100%;"></div>
+<div class="preview-bar" style="height: 70%;"></div>
+</div>
+<div class="preview-chip-row">
+<span class="preview-chip teal">{icon_chart} Loss Trends</span>
+<span class="preview-chip blue-tint">Directional Range</span>
+</div>
+</div>
+<div class="roundtable-card-info">
+<div class="roundtable-card-title">{icon_chart} Actuarial Review</div>
+<p class="roundtable-card-desc">Computes pure-SQL loss trends, baseline financial ranges, and directional portfolio exposure.</p>
+</div>
+</div>
+
+<div class="roundtable-feature-card">
+<div class="roundtable-card-preview">
+<div class="preview-chip-row">
+<span class="preview-chip">Segment Exposure</span>
+<span class="preview-chip green">Eligible</span>
+</div>
+<div class="preview-chip-row">
+<span class="preview-chip teal">{icon_shield} Underwriting Rules</span>
+<span class="preview-chip blue-tint">Boundaries</span>
+</div>
+</div>
+<div class="roundtable-card-info">
+<div class="roundtable-card-title">{icon_shield} Underwriting Review</div>
+<p class="roundtable-card-desc">Evaluates risk eligibility, guideline boundaries, and customer segment exposure thresholds.</p>
+</div>
+</div>
+
+<div class="roundtable-feature-card">
+<div class="roundtable-card-preview">
+<div class="preview-chip-row">
+<span class="preview-chip teal">{icon_briefcase} 4 Peer Carriers</span>
+<span class="preview-chip green">Benchmarked</span>
+</div>
+<div class="preview-chip-row">
+<span class="preview-chip">Market Policy Terms</span>
+<span class="preview-chip blue-tint">Gaps Found</span>
+</div>
+</div>
+<div class="roundtable-card-info">
+<div class="roundtable-card-title">{icon_briefcase} Competitor Intel</div>
+<p class="roundtable-card-desc">Benchmarks peer carrier coverages, policy terms, and market product offerings.</p>
+</div>
+</div>
+
+<div class="roundtable-feature-card">
+<div class="roundtable-card-preview">
+<div class="preview-chip-row">
+<span class="preview-chip teal">{icon_scale} 50-State Mandates</span>
+<span class="preview-chip blue-tint">Filing Req</span>
+</div>
+<div class="preview-chip-row">
+<span class="preview-chip green">DOI Compliance</span>
+<span class="preview-chip blue-tint">Statutory</span>
+</div>
+</div>
+<div class="roundtable-card-info">
+<div class="roundtable-card-title">{icon_scale} Regulatory Compliance</div>
+<p class="roundtable-card-desc">Assesses state insurance mandates, rate filing requirements, and statutory guidelines.</p>
+</div>
+</div>
+
+<div class="roundtable-feature-card">
+<div class="roundtable-card-preview">
+<div class="preview-chip-row">
+<span class="preview-chip teal">{icon_globe} Live Web Search</span>
+<span class="preview-chip green">Real-Time</span>
+</div>
+<div class="preview-chip-row">
+<span class="preview-chip">Cited Industry News</span>
+<span class="preview-chip blue-tint">External API</span>
+</div>
+</div>
+<div class="roundtable-card-info">
+<div class="roundtable-card-title">{icon_globe} Live Web Research</div>
+<p class="roundtable-card-desc">Discovers real-time industry news, competitor launches, and external research studies.</p>
+</div>
+</div>
+</div>"""
+
+    st.markdown(grid_html, unsafe_allow_html=True)
 
 # ===========================================================================
 # VIEW: CLAIMS & ACTUARIAL WORKSPACES
@@ -1059,9 +1240,11 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                     "⚖️ Regulatory Compliance",
                     "🌐 Live Web Research",
                 ])
+                tab_readiness = None
             else:
-                tab_primary, tab_market, tab_underwriting, tab_compliance, tab_external = st.tabs([
+                tab_primary, tab_readiness, tab_market, tab_underwriting, tab_compliance, tab_external = st.tabs([
                     "🔍 Claims Review (Active)",
+                    "✅ Claims Readiness",
                     "🏢 Competitor Intelligence",
                     "🛡️ Underwriting Review",
                     "⚖️ Regulatory Compliance",
@@ -1089,15 +1272,16 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                         )
                     with m_col2:
                         st.metric(
-                            label="Directional Annual Exposure",
-                            value=f"${dir_est.get('range_low', 0):,.0f} - ${dir_est.get('range_high', 0):,.0f}" if dir_est else "$3,400,000 - $6,200,000",
-                            help="Calculated directional exposure range.",
+                            label="Directional Next-12-Month Incurred",
+                            value=f"${dir_est.get('range_low', 0):,.0f} - ${dir_est.get('range_high', 0):,.0f}" if dir_est else "Not available",
+                            help="Directional estimate — not actuarial.",
                         )
                     with m_col3:
+                        incident_count = dir_est.get("incident_count") if dir_est else None
                         st.metric(
-                            label="Historical Incident Baseline",
-                            value=f"{dir_est.get('incident_count', 42)} claims",
-                            help="Based on internal ClaimCenter records.",
+                            label="Projected Claims (12 mo)",
+                            value=f"{incident_count:,} claims" if incident_count is not None else "Not available",
+                            help="Last-12-month reported claims projected with exposure growth and fitted frequency trend.",
                         )
                     with m_col4:
                         st.metric(
@@ -1109,10 +1293,10 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                     st.markdown("#### 📈 Directional Loss Projection Range")
                     if dir_est:
                         st.write(f"**Calculated Range:** ${dir_est.get('range_low', 0):,.2f} to ${dir_est.get('range_high', 0):,.2f}")
-                        st.caption(f"**Actuarial Basis:** {dir_est.get('basis', 'Historical claim volumes and severity distribution.')}")
+                        st.caption(f"**Basis:** {dir_est.get('basis', 'Historical claim volumes and severity distribution.')}")
                     else:
-                        st.write("**Calculated Range:** $3,400,000.00 to $6,200,000.00")
-                        st.caption("**Actuarial Basis:** Extrapolated from 5-year historical claims frequency and severity trends.")
+                        st.info("No directional estimate available for this brief.")
+                    render_claims_kpis(brief_data.get("claims_kpis") or {})
 
                     st.markdown(
                         f'<div class="insufficient-evidence">ℹ️ <strong>Actuarial Guardrail:</strong> Numbers are calculated deterministically via SQL. Final loss ratios require Chief Actuary sign-off before APD rate book filing.</div>',
@@ -1156,31 +1340,36 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                             value="Yes (Mandatory)",
                         )
 
+                    st.markdown("#### 📊 Claims Findings")
+                    render_edit_status(brief)
+                    if not render_claims_dashboard(
+                        brief_data.get("claims_analytics") or {},
+                        notes=brief.get("section_notes") or {},
+                        save_note=lambda section, text, bid=brief["id"]: api_save_section_note(bid, section, text),
+                        key_prefix=f"brief{brief['id']}",
+                        locked=brief.get("claims_status") == "Approved",
+                    ):
+                        # Briefs created before structured analytics were stored: show the text, formatted
+                        st.caption("Charts are available for briefs generated after the claims-data upgrade — regenerate this brief to see them.")
+                        with st.container(border=True):
+                            st.markdown(brief["claims_finding_text"].replace("\n• ", "\n\n• "))
+
                     if internal_ev:
-                        st.markdown("#### 📑 Verified Claims Source Citations")
-                        for ev in internal_ev:
-                            for c in ev.get("citations", []):
-                                source_url = c.get("source_url", "")
-                                claim_text = c.get("claim", "")
-                                st.markdown(
-                                    f'''<div class="citation-block">
-                                        <span class="citation-label">Verified Citation:</span> 
-                                        <span class="citation-source">{source_url}</span> — {claim_text}
-                                    </div>''',
-                                    unsafe_allow_html=True,
-                                )
+                        with st.expander(f"📑 Verified claims source citations ({sum(len(ev.get('citations', [])) for ev in internal_ev)})"):
+                            for ev in internal_ev:
+                                for c in ev.get("citations", []):
+                                    st.markdown(f"`{c.get('source_url', '')}` — {c.get('claim', '')}")
 
-                    st.markdown("#### ✍️ Complete Claims Decision Document (Editable by Adjuster)")
-                    st.caption(
-                        "The full multi-section Claims Domain Brief is pre-filled below. Review and edit any section before submitting sign-off."
-                    )
-
-                    edited_claims_text = st.text_area(
-                        "Claims Finding Document",
-                        value=brief["claims_finding_text"],
-                        height=300,
-                        key=f"claims_edit_{brief['id']}",
-                    )
+                    with st.expander("✍️ Edit claims finding text for sign-off", expanded=False):
+                        st.caption(
+                            "This text is the record that gets approved. Edit any section, then Save or Approve below."
+                        )
+                        edited_claims_text = st.text_area(
+                            "Claims Finding Document",
+                            value=brief["claims_finding_text"],
+                            height=420,
+                            key=f"claims_edit_{brief['id']}",
+                        )
 
                     btn_col1, btn_col2, btn_col3, btn_col_space = st.columns([1.2, 1.2, 1.2, 3])
 
@@ -1305,21 +1494,34 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                         st.markdown("---")
 
             # ---------------------------------------------------------------
+            # CLAIMS READINESS (Claims workspace only)
+            # ---------------------------------------------------------------
+            if tab_readiness is not None:
+                with tab_readiness:
+                    render_readiness(
+                        brief,
+                        api_get_readiness(brief["id"]),
+                        save_item=lambda item_id, fields, bid=brief["id"]: api_update_readiness(bid, item_id, fields),
+                    )
+
+            # ---------------------------------------------------------------
             # TAB 5: LIVE WEB RESEARCH (Formatted Sub-Tabs & Right-Side Reader)
             # ---------------------------------------------------------------
             with tab_external:
                 st.markdown("### 🌐 Live External Market & Web Intelligence")
                 st.caption("Categorized external discovery across news articles, industry blogs, government safety/regulatory datasets, actuarial research papers, and competitor filings.")
 
-                ext_status = brief_data.get("external_market_status", "success")
+                ext_status = brief_data.get("external_market_status", "offline")
                 ext_err_msg = brief_data.get("external_market_error_message")
                 ext_ev = brief_data.get("external_market_evidence", [])
 
-                # If external market evidence is empty in the saved brief, generate curated fallback
-                if not ext_ev:
-                    from backend.llm import _generate_curated_external_evidence
-                    curated_items = _generate_curated_external_evidence(brief["title"], brief.get("tag_value"))
-                    ext_ev = [it.model_dump() if hasattr(it, "model_dump") else (it.dict() if hasattr(it, "dict") else it) for it in curated_items]
+                # No placeholder sources: surface why live research returned nothing
+                if ext_status == "error":
+                    st.error(ext_err_msg or "Live web research failed for this brief.")
+                elif ext_status == "offline":
+                    st.warning(ext_err_msg or "Live web research is offline — configure TAVILY_API_KEY in .env.")
+                elif ext_err_msg:
+                    st.info(ext_err_msg)
 
                 # Categorize items into the 5 target categories
                 cat_articles: List[Dict[str, Any]] = []
@@ -1511,6 +1713,11 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                     _render_category_split_view(cat_research, "Research Papers & Studies", "research")
 
                 with sub_competitors:
+                    # SERFF blocks automated access, so filed rates/forms are a manual lookup
+                    st.caption(
+                        "Carrier web pages show marketed coverage only. For filed rates, rules and policy forms, "
+                        "search competitor filings by state in [SERFF Filing Access](https://filingaccess.serff.com/sfa/home/)."
+                    )
                     _render_category_split_view(cat_competitors, "Competitor Offerings & Products", "competitors")
 
                 with sub_stream:
