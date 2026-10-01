@@ -14,11 +14,11 @@ import pandas as pd
 import streamlit as st
 
 # Validated reference palette (dataviz references/palette.md, light mode)
-SERIES = "#2a78d6"      # slot 1: this risk pattern
+SERIES = "#3D3FE0"      # slot 1: this risk pattern (Roundtable indigo)
 COMPARE = "#eb6834"     # slot 2: second series where two measures share a chart
 BASELINE = "#9a9892"    # neutral: baseline / comparison group
 MUTED = "#c9c7c1"       # low-credibility marks
-TEXT = "#52514e"
+TEXT = "#5B5F6E"
 
 DENIAL_NAMES = {
     "mechanical_breakdown_excluded": "Mechanical breakdown exclusion",
@@ -75,11 +75,12 @@ def _delta_pts(v: Optional[float], base: Optional[float], unit: str = " pts") ->
 def _chart(c: alt.Chart, height: Any = 260) -> None:
     st.altair_chart(
         (c.properties(height=height) if height is not None else c)
+        .configure(background="transparent", font="Plus Jakarta Sans")   # must precede configure_* calls
         .configure_view(strokeWidth=0)
-        .configure_axis(labelColor=TEXT, titleColor=TEXT, gridColor="#ecebe7", domainColor="#d6d4ce",
+        .configure_axis(labelColor=TEXT, titleColor=TEXT, gridColor="#ECEDF3", domainColor="#d6d4ce",
                         labelFontSize=12, titleFontSize=12, titleFontWeight="normal")
         .configure_legend(labelColor=TEXT, titleColor=TEXT, orient="top", labelFontSize=12)
-        .configure_title(color="#1B2A4A", fontSize=14, anchor="start", fontWeight=600),
+        .configure_title(color="#121318", fontSize=14, anchor="start", fontWeight=600),
         width="stretch",
     )
 
@@ -176,8 +177,8 @@ def _severity(a: Dict[str, Any]) -> None:
             column=alt.Column("Statistic:N", title=None, header=alt.Header(labelColor=TEXT, labelOrient="bottom")),
             tooltip=["Statistic", "Group", alt.Tooltip("Amount:Q", format="$,.0f")],
         ).properties(width=130, height=220, title="Severity vs baseline")
-        st.altair_chart(chart.configure_view(strokeWidth=0).configure_legend(orient="top")
-                        .configure_title(color="#1B2A4A", fontSize=14, anchor="start"), width="content")
+        st.altair_chart(chart.configure(background="transparent", font="Plus Jakarta Sans").configure_view(strokeWidth=0).configure_legend(orient="top")
+                        .configure_title(color="#121318", fontSize=14, anchor="start"), width="content")
     with right:
         if lr.get("has_data"):
             lrd = pd.DataFrame(lr["by_year"])
@@ -221,7 +222,7 @@ def _history(a: Dict[str, Any]) -> None:
         cols = st.columns(len(samples))
         for col, c in zip(cols, samples):
             with col:
-                with st.container(border=True):
+                with st.container(border=True, key=f"rtcard_sample_{c['claim_id']}"):
                     st.markdown(f"**{c['label']}**  \n`{c['claim_id']}` · {c['claim_date']} · {c['location']}")
                     if c.get("vehicle"):
                         st.caption(c["vehicle"])
@@ -435,6 +436,45 @@ def _recommendation(a: Dict[str, Any]) -> None:
         st.markdown("\n".join(f"- {_md(x)}" for x in rec.get("actions", [])) or "- Continue quarterly monitoring")
 
 
+def _proxy_banner(a: Dict[str, Any]) -> None:
+    basis = a.get("basis") or {}
+    if basis.get("basis") != "proxy":
+        return
+    how = "auto-suggested from the title" if basis.get("auto_suggested") else "selected by the reviewer"
+    st.warning(f"**Proxy data — not this product's own claims.** No ClaimCenter claims are tagged for this product, so every "
+               f"section below pools the claims of the related risk pattern(s) **{' + '.join(basis.get('proxy_tags', []))}** "
+               f"({how}). Frequency and severity show how a comparable peril behaves; claim counts and dollar totals belong "
+               f"to the proxy patterns, not to the new product.")
+
+
+def _line_baseline(a: Dict[str, Any], key_prefix: str) -> bool:
+    """Whole-line claims experience for a product with no own or proxy history."""
+    lb = a.get("line_baseline") or {}
+    if not lb.get("has_data"):
+        return False
+    st.info("**No direct or proxy claims history.** These are whole-line figures for "
+            f"**{', '.join(lb['products'])}**, not this product's risk: a starting point for wording, reserving and KPI "
+            "thresholds. Choose proxy risk patterns to run the full 11-section claims analysis on comparable claims.")
+    with st.container(border=True, key=f"rtcard_{key_prefix}_line"):
+        st.markdown("##### Line-of-Business Baseline")
+        st.caption(f"{', '.join(lb['products'])} · valued {lb['valuation_date']} · frequency per 1,000 exposure-years")
+        c = st.columns(6)
+        c[0].metric("Claims", f"{lb['claims']:,}")
+        c[1].metric("Frequency / 1,000", f"{lb['frequency_per_1000']:.1f}")
+        c[2].metric("Avg severity", _money(lb["avg_severity"]), help=f"Median {_money(lb['median_severity'])}")
+        c[3].metric("P90 severity", _money(lb["p90_severity"]))
+        c[4].metric("Loss + ALAE ratio", _pct(lb["loss_ratio_pct"]))
+        c[5].metric("Denial rate", _pct(lb["denial_rate_pct"]))
+        df = pd.DataFrame(lb["top_patterns"])
+        if not df.empty:
+            df["Pattern"] = df["tag_value"].map(lambda t: CAUSE_NAMES.get(t, t))
+            _hbar(df, "Pattern", "share_pct", "Most frequent risk patterns in the line (share of claims)", ".0f",
+                  [alt.Tooltip("Pattern:N"), alt.Tooltip("claims:Q", title="Claims"),
+                   alt.Tooltip("share_pct:Q", title="Share %", format=".1f"),
+                   alt.Tooltip("avg_incurred:Q", title="Avg incurred", format="$,.0f")])
+    return True
+
+
 def _section_note(section: int, note: str, key_prefix: str, save_note: Optional[Callable[[int, str], bool]],
                   locked: bool) -> None:
     """Reviewer note beside a section's charts. Notes add judgement; they never change the numbers."""
@@ -460,14 +500,18 @@ def render_claims_dashboard(analytics: Dict[str, Any], notes: Optional[Dict[str,
     """Render the 11 claims sections, each with its reviewer note.
 
     Returns False when the brief has no structured analytics. *save_note(section, text)* persists a note;
-    *locked* hides note editing (e.g. after sign-off).
+    *locked* hides note editing (e.g. after sign-off). A brief with no own or proxy history shows the
+    line-of-business baseline instead of the 11 sections.
     """
-    if not analytics or not analytics.get("summary", {}).get("has_data"):
+    if not analytics:
         return False
+    if not analytics.get("summary", {}).get("has_data"):
+        return _line_baseline(analytics, key_prefix)
+    _proxy_banner(analytics)
     notes = notes or {}
     for section, fn in enumerate((_frequency, _severity, _history, _causes, _loss_types, _segments, _geography, _gaps,
                                   _recurring, _emerging, _recommendation), start=1):
-        with st.container(border=True):
+        with st.container(border=True, key=f"rtcard_{key_prefix}_s{section}"):
             try:
                 fn(analytics)
             except Exception as exc:   # one bad section should not blank the whole report

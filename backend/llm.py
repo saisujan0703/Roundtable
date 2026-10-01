@@ -27,7 +27,7 @@ try:
 except ImportError:
     pass
 
-from backend.analytics import build_claims_analytics, list_tags
+from backend.analytics import build_claims_analytics, get_line_baseline, list_tags
 from backend.models import (
     BriefEvidence,
     Citation,
@@ -66,6 +66,7 @@ STRICT OPERATING RULES:
 6. CITATIONS: Every qualitative factual statement regarding competitors or regulations MUST cite a real source_url provided in the retrieved evidence. Internal statements cite sqlite://roundtable.db/<table>?<metric>.
 7. FINANCIAL FIGURES: All financial projections must be explicitly framed as a DirectionalEstimate with label "Directional estimate — not actuarial".
 8. HUMAN SIGN-OFF: Section 11 must be a directional finding for human review, never a final decision. The AI never finalizes or auto-approves anything.
+9. ANALYSIS BASIS: <analysis_basis> says what the internal numbers describe. If it is "proxy", the product has NO claims history of its own and <claims_analytics> pools the claims of the related patterns listed; open every section by naming them as proxy data, never present proxy figures as this product's own experience, and treat frequency and severity as transferable but claim counts and dollar totals as not. If it is "line_baseline", only whole-line figures exist: write "Insufficient evidence for [section name]." for sections 1-10 and use the line_baseline figures only as context in section 11.
 """
 
 
@@ -162,8 +163,10 @@ def resolve_risk_tag_with_confidence(
                     kw_score = 0.82  # multi-word phrase match
                 elif kw_lower in title_words:
                     kw_score = 0.72  # exact word token match
-                else:
+                elif len(kw_lower) >= 5:
                     kw_score = 0.55  # substring match
+                else:
+                    continue         # short keywords ('ev', 'cell') only count as whole words
                 if kw_score > best_score:
                     best_score = kw_score
                     best_tag = tag
@@ -175,7 +178,92 @@ def resolve_risk_tag_with_confidence(
     return best_tag, round(best_score, 2)
 
 
-def _build_llm_payload(title: str, tag_value: Optional[str] = None) -> Dict[str, Any]:
+# ---------------------------------------------------------------------------
+# No direct claims history: proxy risk patterns, then the line-of-business baseline
+# ---------------------------------------------------------------------------
+MAX_PROXY_TAGS = 3
+# Words that say nothing about the peril, so they never make a proxy match on their own
+_GENERIC_WORDS = {"insurance", "coverage", "cover", "policy", "product", "protection", "endorsement", "plan", "new",
+                  "damage", "loss", "claims", "claim", "risk", "injury", "injuries", "injured", "with", "from", "other", "for", "and", "the"}
+# Where a product sits when nothing about its peril matches: keyword -> Guidewire product code
+LINE_KEYWORDS: Dict[str, List[str]] = {
+    "PersonalAuto": ["auto", "car", "cars", "vehicle", "vehicles", "driver", "drivers", "motorist", "ev", "evs", "motorcycle"],
+    "BusinessAuto": ["fleet", "commercial auto", "business auto", "truck", "trucks", "trucking", "delivery van", "rideshare"],
+    "HOPHomeowners": ["home", "homes", "homeowner", "homeowners", "house", "dwelling", "residential", "condo", "renters"],
+    "CommercialProperty": ["commercial property", "business property", "building", "warehouse", "office", "retail",
+                           "restaurant", "store", "premises", "landlord"],
+    "WorkersComp": ["worker", "workers", "workers comp", "employee", "employees", "workplace", "occupational", "staff"],
+}
+
+
+def _words(text: str) -> set:
+    return {w for w in text.lower().replace("-", " ").replace("_", " ").replace("/", " ").split()
+            if len(w) >= 4 and w not in _GENERIC_WORDS}
+
+
+def _tag_vocabulary() -> Dict[str, set]:
+    """Peril words per known tag (semantic keywords + LossCause name). Words shared by 3+ tags are too generic."""
+    vocab = {}
+    for tag in list_tags():
+        text = " ".join(TAG_SEMANTIC_MAP.get(tag, [])) + " " + tag + " " + LOSS_CAUSE_NAMES.get(tag, "")
+        vocab[tag] = _words(text)
+    counts: Dict[str, int] = {}
+    for words in vocab.values():
+        for w in words:
+            counts[w] = counts.get(w, 0) + 1
+    return {tag: {w for w in words if counts[w] < 3} for tag, words in vocab.items()}
+
+
+def suggest_proxy_tags(title: str, limit: int = MAX_PROXY_TAGS) -> List[str]:
+    """Related risk patterns whose claims history can stand in for a product with none of its own.
+
+    Ranked by how many peril words the title shares with each pattern (whole words, or a shared stem of
+    5+ letters, so 'flooding' finds 'flood'). Returns [] when nothing in the title relates to a known pattern.
+    """
+    title_words = _words(title)
+    scored = []
+    for tag, words in _tag_vocabulary().items():
+        hits = sum(1 for t in title_words
+                   if t in words or any(len(w) >= 5 and t.startswith(w) for w in words))
+        if hits:
+            scored.append((hits, tag))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return [tag for _, tag in scored[:limit]]
+
+
+def infer_product_lines(title: str) -> List[str]:
+    """Guidewire product lines the idea belongs to, from words in its title."""
+    t = " " + title.lower().replace("-", " ").replace("'", "") + " "
+    return [line for line, kws in LINE_KEYWORDS.items() if any(f" {kw} " in t for kw in kws)]
+
+
+def resolve_analysis_basis(title: str, resolved_tag: Optional[str], proxy_tags: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Decide what internal claims data a brief can stand on.
+
+    direct        -> the idea matches a tagged risk pattern with its own claims
+    proxy         -> no own history; pooled claims of related patterns (reviewer-chosen or auto-suggested)
+    line_baseline -> no related pattern; whole-line experience as the starting point
+    none          -> nothing internal to show
+    """
+    known = set(list_tags())
+    if resolved_tag and resolved_tag in known:
+        return {"basis": "direct", "analysis_key": resolved_tag}
+    suggested = suggest_proxy_tags(title)
+    chosen = [t for t in (proxy_tags or []) if t in known][:MAX_PROXY_TAGS]
+    auto = not chosen
+    if auto:
+        chosen = suggested
+    lines = infer_product_lines(title)
+    if chosen:
+        return {"basis": "proxy", "analysis_key": "+".join(chosen), "proxy_tags": chosen, "auto_suggested": auto,
+                "suggested_tags": suggested, "product_lines": lines}
+    if lines:
+        return {"basis": "line_baseline", "product_lines": lines}
+    return {"basis": "none"}
+
+
+def _build_llm_payload(title: str, tag_value: Optional[str] = None,
+                       basis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Gather internal claims analytics and external RAG evidence for prompt context.
 
     External RAG queries run off the title (and tag if present) independently of internal matching.
@@ -184,13 +272,18 @@ def _build_llm_payload(title: str, tag_value: Optional[str] = None) -> Dict[str,
     comp_docs = retrieve_evidence(search_term, source_type="competitor", n_results=4, min_score=1.8)
     reg_docs = retrieve_evidence(search_term, source_type="regulatory", n_results=3, min_score=1.8)
 
+    basis = basis or resolve_analysis_basis(title, tag_value)
     analytics = None
-    if tag_value and tag_value in list_tags():
-        analytics = build_claims_analytics(tag_value)
+    if basis["basis"] in ("direct", "proxy"):
+        analytics = {**build_claims_analytics(basis["analysis_key"]), "basis": basis}
+    elif basis["basis"] == "line_baseline":
+        analytics = {"basis": basis, "summary": {"has_data": False},
+                     "line_baseline": get_line_baseline(basis["product_lines"])}
 
     return {
         "title": title,
         "tag_value": tag_value,
+        "basis": basis,
         "claims_analytics": analytics,
         "comp_docs": comp_docs,
         "reg_docs": reg_docs,
@@ -263,6 +356,13 @@ def _claims_recommendation(tag: str, a: Dict[str, Any]) -> Dict[str, Any]:
     else:
         verdict = "MONITOR"
         finding = "Claims evidence does not currently show a coverage gap or an abnormal cost trend for this pattern."
+    basis = a.get("basis") or {}
+    if basis.get("basis") == "proxy":
+        verdict = f"{verdict} (proxy)"
+        finding = (f"Based on proxy patterns ({' + '.join(basis['proxy_tags'])}), not this product's own claims. " + finding)
+        actions.append("Claims & Actuarial: confirm each proxy pattern behaves like the new product's peril before relying on these figures.")
+        actions.append("Claims: create a dedicated risk tag for the new product in ClaimCenter so its own history builds from launch "
+                       "(credible at 30+ claims per accident year).")
     return {"verdict": verdict, "finding": finding, "signals": signals, "actions": actions}
 
 
@@ -280,6 +380,20 @@ def _directional_estimate(a: Dict[str, Any]) -> DirectionalEstimate:
     prior = full_years[-1] if full_years else None
     expo_growth = (current["annualized_exposure"] / prior["earned_exposure"] - 1
                    if current["partial_year"] and prior and prior["earned_exposure"] else 0.0)
+    basis = a.get("basis") or {}
+    if basis.get("basis") == "proxy":
+        # Claim counts of the proxy patterns are not the new product's volume; frequency and severity transfer
+        freq = (a["summary"].get("frequency_per_1000") or 0.0) * (1 + freq_growth)
+        central = freq * paying_share * sev * 1.05
+        return DirectionalEstimate(
+            range_low=round(central * 0.5, 2),
+            range_high=round(central * 2.0, 2),
+            incident_count=int(round(freq)),
+            basis=(f"PROXY — expected loss cost per 1,000 {a['summary'].get('exposure_unit')} using the pooled claims of "
+                   f"{' + '.join(basis['proxy_tags'])}: {freq:.1f} claims per 1,000 (incl. fitted trend {freq_growth:+.1%}), "
+                   f"{paying_share:.0%} with a loss payment at average severity {_m(sev)} +5% inflation. Wide 50%-200% range because "
+                   f"the product has no claims of its own. Multiply by expected policies-in-force / 1,000 for a portfolio figure."),
+        )
     projected_claims = last12 * (1 + freq_growth) * (1 + expo_growth)
     central = projected_claims * paying_share * sev * 1.05   # +5% severity inflation
     spread = (0.7, 1.4) if last12 < 100 else (0.8, 1.25)
@@ -550,24 +664,45 @@ def _deterministic_synthesis(
     if not reg_ev:
         reg_ev.append(BriefEvidence(statement="Insufficient evidence — no matching regulatory source found.", citations=[]))
 
-    # Case A: Unmatched Risk Tag or Confidence below 50%
-    if not tag_value or not analytics or not analytics["summary"].get("has_data"):
+    basis = payload.get("basis") or {"basis": "none"}
+
+    # Case A: no own or proxy claims history — line baseline when the product's line is known
+    if not analytics or not analytics["summary"].get("has_data"):
+        lb = (analytics or {}).get("line_baseline") or {}
+        internal = [BriefEvidence(
+            statement=(
+                "Insufficient evidence — no internal ClaimCenter data currently tagged for this pattern, and no related "
+                "risk pattern was found. Select proxy risk patterns for this brief to run the full claims analysis on "
+                "comparable claims."
+            ),
+            citations=[],
+        )]
+        if lb.get("has_data"):
+            top = ", ".join(f"{t['tag_value']} {t['share_pct']:.0f}%" for t in lb["top_patterns"][:5])
+            internal.append(BriefEvidence(
+                statement=(
+                    f"### LINE-OF-BUSINESS BASELINE — {', '.join(lb['products'])} (valued {lb['valuation_date']})\n"
+                    f"Whole-line figures, not this product's risk; use them as the starting point until proxy or own data exists.\n"
+                    f"• {lb['claims']:,} claims; {lb['frequency_per_1000']:.1f} per 1,000 exposure-years.\n"
+                    f"• Severity: average {_m(lb['avg_severity'])}, median {_m(lb['median_severity'])}, "
+                    f"90th percentile {_m(lb['p90_severity'])}.\n"
+                    f"• Loss + ALAE ratio {_p(lb['loss_ratio_pct'])}; denial rate {_p(lb['denial_rate_pct'])}; "
+                    f"litigation rate {_p(lb['litigation_rate_pct'])}.\n"
+                    f"• Most frequent risk patterns in the line: {top}."
+                ),
+                citations=[_cite("Line-of-business claims baseline", "claims?metric=line_baseline")],
+            ))
         return ProductBrief(
             title=title,
             tag_value=tag_value,
             match_confidence=confidence,
+            analysis_basis=basis["basis"],
             problem_statement=(
                 f"Evaluation of prospective insurance initiative '{title}'. "
                 "No historical internal claims signal is currently tagged in Guidewire ClaimCenter."
             ),
-            internal_evidence=[BriefEvidence(
-                statement=(
-                    "Insufficient evidence — no internal ClaimCenter data currently tagged for this pattern. "
-                    "This product idea has no historical internal claims signal; internal analysis cannot proceed until "
-                    "claims data exists or a related risk category is identified."
-                ),
-                citations=[],
-            )],
+            internal_evidence=internal,
+            claims_analytics=_jsonable(analytics) if analytics else {"basis": basis},
             competitor_comparison=comp_ev,
             regulatory_notes=reg_ev,
             directional_estimate=DirectionalEstimate(
@@ -582,19 +717,36 @@ def _deterministic_synthesis(
             human_approval_required=True,
         )
 
-    # Case B: Matched Tag — all 11 Claims sections from precomputed analytics
-    internal_ev, rec = _internal_sections(tag_value, analytics)
+    # Case B: Matched Tag (or proxy patterns) — all 11 Claims sections from precomputed analytics
+    proxy = basis["basis"] == "proxy"
+    label = " + ".join(basis["proxy_tags"]) if proxy else tag_value
+    internal_ev, rec = _internal_sections(label, analytics)
     s, sev, gaps = analytics["summary"], analytics["severity"], analytics["coverage_gaps"]
     problem = (
-        f"'{tag_value}' produced {s['tag_count']:,} claims and {_m(s['incurred_loss'])} incurred in {s['scope']} "
+        f"'{label}' produced {s['tag_count']:,} claims and {_m(s['incurred_loss'])} incurred in {s['scope']} "
         f"({s['frequency_per_1000']:.1f} per 1,000 {s['exposure_unit']}, severity {_idx(sev.get('severity_index_vs_baseline'))} baseline); "
         f"{_p(gaps.get('gap_denial_rate_pct'))} of these claims were denied under exclusions. "
         f"Claims finding: {rec['verdict']}."
     )
+    if proxy:
+        problem = (f"'{title}' has no claims history of its own in ClaimCenter. As a proxy, the related pattern"
+                   f"{'s' if len(basis['proxy_tags']) > 1 else ''} " + problem)
+        internal_ev.insert(0, BriefEvidence(
+            statement=(
+                f"**PROXY DATA — not this product's own claims.** No ClaimCenter claims are tagged for '{title}'. "
+                f"The sections below pool the claims of the related risk pattern(s) {label} "
+                f"({'auto-suggested from the title' if basis.get('auto_suggested') else 'selected by the reviewer'}). "
+                f"Frequency and severity indicate how a comparable peril behaves; claim counts and dollar totals belong to "
+                f"the proxy patterns, not to the new product."
+            ),
+            citations=[_cite(f"Proxy risk patterns: {label}", "claims?metric=proxy_basis")],
+        ))
     return ProductBrief(
         title=title,
-        tag_value=tag_value,
+        tag_value=None if proxy else tag_value,
         match_confidence=confidence,
+        analysis_basis=basis["basis"],
+        proxy_tags=basis.get("proxy_tags") or [],
         problem_statement=problem,
         internal_evidence=internal_ev,
         competitor_comparison=comp_ev,
@@ -841,14 +993,15 @@ def generate_external_market_evidence(
         return ([], "error", f"Live web research failed: {type(e).__name__}.")
 
 
-def generate_brief(title: str, tag_value: Optional[str] = None) -> ProductBrief:
+def generate_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Optional[List[str]] = None) -> ProductBrief:
     """Generate a fully cited Product Decision Brief.
 
     Guardrails Enforced:
     1. Input Validation: Product Idea Title capped at 150 characters.
     2. Prompt Isolation: User title is placed inside isolated research tags to prevent prompt injection.
     3. Decoupled RAG: External RAG queries run off the title independently of internal tag matching.
-    4. Confidence Threshold: Internal tag matching below 50% confidence forces 'Insufficient evidence'.
+    4. Confidence Threshold: Internal tag matching below 50% confidence never uses the tag; the claims analysis
+       falls back to proxy risk patterns (*proxy_tags*, else auto-suggested), then the line-of-business baseline.
     5. Independent 3-State External Web Research via Tavily Search:
        - 'offline': When TAVILY_API_KEY is not configured.
        - 'error': When live API call fails.
@@ -863,7 +1016,8 @@ def generate_brief(title: str, tag_value: Optional[str] = None) -> ProductBrief:
 
     # Guardrail 2: Semantic matching with confidence calculation (below 50% returns None)
     resolved_tag, confidence = resolve_risk_tag_with_confidence(title, explicit_tag=tag_value)
-    payload = _build_llm_payload(title, resolved_tag)
+    basis = resolve_analysis_basis(title, resolved_tag, proxy_tags)
+    payload = _build_llm_payload(title, resolved_tag, basis)
 
     # 1. Independent External Market Research via Tavily
     ext_ev, ext_status, ext_err = generate_external_market_evidence(title, resolved_tag)
@@ -898,6 +1052,7 @@ def generate_brief(title: str, tag_value: Optional[str] = None) -> ProductBrief:
             f"  <matched_tag>{json.dumps(resolved_tag)}</matched_tag>\n"
             f"  <match_confidence>{confidence:.2f}</match_confidence>\n"
             f"</research_subject>\n\n"
+            f"<analysis_basis>{json.dumps(basis)}</analysis_basis>\n\n"
             f"<claims_analytics>\n"
             f"{json.dumps(payload['claims_analytics'], indent=1, default=str)}\n"
             f"</claims_analytics>\n\n"
@@ -909,7 +1064,8 @@ def generate_brief(title: str, tag_value: Optional[str] = None) -> ProductBrief:
         claude_brief_schema = ProductBrief.model_json_schema()
         # Exclude external market fields from Claude tool schema (populated server-side by Gemini)
         if "properties" in claude_brief_schema:
-            for field in ("external_market_evidence", "external_market_status", "external_market_error_message", "claims_kpis", "claims_analytics"):
+            for field in ("external_market_evidence", "external_market_status", "external_market_error_message", "claims_kpis",
+                          "claims_analytics", "analysis_basis", "proxy_tags"):
                 claude_brief_schema["properties"].pop(field, None)
         if "required" in claude_brief_schema:
             claude_brief_schema["required"] = [
@@ -944,12 +1100,18 @@ def generate_brief(title: str, tag_value: Optional[str] = None) -> ProductBrief:
             brief = ProductBrief.model_validate(submitted_block.input)
             brief.generation_method = "anthropic_claude"
             brief.match_confidence = confidence
+            # Basis and tag are decided server-side, never by the model
+            brief.tag_value = resolved_tag if basis["basis"] == "direct" else None
+            brief.analysis_basis = basis["basis"]
+            brief.proxy_tags = basis.get("proxy_tags") or []
             analytics = payload.get("claims_analytics")
             if analytics and analytics["summary"].get("has_data"):
                 # KPI tiles and the estimate always come from analytics, never from the model
                 brief.claims_kpis = _claims_kpis(analytics)
-                brief.claims_analytics = _jsonable({**analytics, "recommendation": _claims_recommendation(resolved_tag, analytics)})
+                brief.claims_analytics = _jsonable({**analytics, "recommendation": _claims_recommendation(basis["analysis_key"], analytics)})
                 brief.directional_estimate = _directional_estimate(analytics)
+            else:
+                brief.claims_analytics = _jsonable(analytics) if analytics else {"basis": basis}
             brief.external_market_evidence = ext_ev
             brief.external_market_status = ext_status
             brief.external_market_error_message = ext_err

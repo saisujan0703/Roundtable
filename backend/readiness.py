@@ -43,7 +43,33 @@ def _item(item_id: str, stage: str, title: str, guidance: str, required: bool = 
 
 
 def build_checklist(brief_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Create the readiness checklist for a brief, tailored with its claims analytics when available."""
+    """Create the readiness checklist for a brief, tailored with its claims analytics when available.
+
+    For a proxy-based brief, every number-backed guidance is marked as proxy data, and two items are added:
+    validate the proxies, and start the product's own claims history.
+    """
+    items = _build_items(brief_data)
+    basis = ((brief_data or {}).get("claims_analytics") or {}).get("basis") or {}
+    if basis.get("basis") != "proxy":
+        return items
+    proxies = " + ".join(basis.get("proxy_tags") or [])
+    generic = {i["id"]: i["guidance"] for i in _build_items({"title": (brief_data or {}).get("title")})}
+    for i in items:
+        if i["guidance"] != generic.get(i["id"]):
+            i["guidance"] = f"Proxy data ({proxies}) — " + i["guidance"]
+    first_setup = next(n for n, i in enumerate(items) if i["stage"] == "setup")
+    items[first_setup:first_setup] = [
+        _item("validate_proxy", "setup", "Validate the proxy risk patterns",
+              f"This product has no claims of its own; the figures here come from {proxies}. Claims and Actuarial confirm "
+              f"each proxy's cause of loss, severity drivers and handling are comparable, and record where they differ."),
+        _item("own_risk_tag", "setup", "Create a dedicated risk tag for the new product",
+              "Add a new risk_category_tag in ClaimCenter and set it on FNOL from launch, so the product's own history "
+              "replaces the proxies once it is credible (30+ claims per accident year)."),
+    ]
+    return items
+
+
+def _build_items(brief_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     a = (brief_data or {}).get("claims_analytics") or {}
     tag = (brief_data or {}).get("tag_value") or (brief_data or {}).get("title") or "this risk"
     has = bool(a.get("summary", {}).get("has_data"))

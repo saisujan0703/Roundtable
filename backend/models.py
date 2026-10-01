@@ -163,6 +163,15 @@ class ProductBrief(BaseModel):
         default=None,
         description="Confidence score (0.0 to 1.0) of the risk tag matching step."
     )
+    analysis_basis: str = Field(
+        default="direct",
+        description="What the internal claims numbers describe: 'direct' (own risk pattern), 'proxy' (related patterns), "
+                    "'line_baseline' (whole line of business) or 'none'."
+    )
+    proxy_tags: List[str] = Field(
+        default_factory=list,
+        description="Related risk patterns pooled as proxy claims history when the product has none of its own."
+    )
     problem_statement: str = Field(
         ...,
         description="High-level summary of the market opportunity or coverage gap."

@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from backend.database import get_connection
-from backend.llm import generate_brief
+from backend.llm import MAX_PROXY_TAGS, generate_brief, resolve_analysis_basis, resolve_risk_tag_with_confidence
 from backend import readiness
 
 app = FastAPI(
@@ -82,6 +82,14 @@ def warm_analytics_cache() -> None:
 class CreateBriefRequest(BaseModel):
     title: str = Field(..., max_length=150, example="EV High-Voltage Battery Coverage Gap")
     tag_value: Optional[str] = None
+    proxy_tags: Optional[List[str]] = Field(
+        None, max_length=MAX_PROXY_TAGS,
+        description="Related risk patterns to use as proxy claims history when the title matches no pattern of its own.")
+
+
+class ProxyTagsRequest(BaseModel):
+    proxy_tags: List[str] = Field(..., min_length=1, max_length=MAX_PROXY_TAGS,
+                                  description="Risk patterns whose pooled claims stand in for this product's history.")
 
 
 class UpdateClaimsTextRequest(BaseModel):
@@ -160,6 +168,13 @@ def list_known_tags() -> List[str]:
         return [r["risk_category_tag"] for r in rows if r["risk_category_tag"]]
 
 
+@app.get("/api/proxy-suggestions")
+def proxy_suggestions(title: str):
+    """What the claims analysis would stand on for this title: direct match, proxy patterns or line baseline."""
+    tag, confidence = resolve_risk_tag_with_confidence(title)
+    return {"title": title, "match_confidence": confidence, **resolve_analysis_basis(title, tag)}
+
+
 @app.get("/api/briefs", response_model=List[BriefRecord])
 def list_briefs():
     """List all created briefs, most recent first."""
@@ -182,15 +197,8 @@ def create_brief(req: CreateBriefRequest):
     clean_tag = req.tag_value.strip() if req.tag_value and req.tag_value.strip() else None
 
     # Generate the structured decision brief via LLM / deterministic fallback
-    product_brief = generate_brief(title=req.title, tag_value=clean_tag)
-
-    # Synthesize the initial Claims domain finding text from internal evidence
-    internal_statements = [ev.statement for ev in product_brief.internal_evidence]
-    claims_finding_text = (
-        "\n\n".join(internal_statements)
-        if internal_statements
-        else f"Analysis for '{req.title}' completed."
-    )
+    product_brief = generate_brief(title=req.title, tag_value=clean_tag, proxy_tags=req.proxy_tags)
+    claims_finding_text = _finding_text(product_brief, req.title)
 
     created_at = datetime.utcnow().isoformat()
     brief_json_str = product_brief.model_dump_json()
@@ -209,6 +217,56 @@ def create_brief(req: CreateBriefRequest):
         conn.commit()
         brief_id = cursor.lastrowid
 
+    return get_brief(brief_id)
+
+
+def _finding_text(product_brief, title: str) -> str:
+    """The initial Claims domain finding text, synthesized from the internal evidence."""
+    internal_statements = [ev.statement for ev in product_brief.internal_evidence]
+    return "\n\n".join(internal_statements) if internal_statements else f"Analysis for '{title}' completed."
+
+
+@app.put("/api/briefs/{brief_id}/proxies", response_model=BriefRecord)
+def rerun_with_proxies(brief_id: int, req: ProxyTagsRequest):
+    """Re-run an unmatched brief's claims analysis on reviewer-chosen proxy risk patterns.
+
+    The brief is regenerated in place and returns to Draft. Reviewer section notes are kept, and readiness
+    items keep their status, owner and note while their guidance is rebuilt from the new numbers.
+    """
+    with get_connection() as conn:
+        row = conn.execute("SELECT title, tag_value, claims_status, readiness_json FROM briefs WHERE id = ?",
+                           (brief_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Brief #{brief_id} not found")
+    if row["claims_status"] == "Approved":
+        raise HTTPException(status_code=409, detail="Claims finding is approved; reject it before changing its proxies.")
+    if row["tag_value"] and row["tag_value"] != "unmatched":
+        raise HTTPException(status_code=409, detail="This brief has its own risk pattern; proxies apply only to unmatched briefs.")
+
+    product_brief = generate_brief(title=row["title"], proxy_tags=req.proxy_tags)
+    if product_brief.analysis_basis != "proxy":
+        detail = ("None of the selected proxy risk patterns exist in the claims data." if product_brief.analysis_basis != "direct"
+                  else f"The title now matches risk pattern '{product_brief.tag_value}' directly; create a new brief instead.")
+        raise HTTPException(status_code=400, detail=detail)
+    text = _finding_text(product_brief, row["title"])
+    brief_json = product_brief.model_dump_json()
+
+    readiness_json = None
+    if row["readiness_json"]:
+        old = {i["id"]: i for i in json.loads(row["readiness_json"])}
+        items = readiness.build_checklist(json.loads(brief_json))
+        for i in items:
+            if i["id"] in old:
+                i.update({k: old[i["id"]][k] for k in ("status", "owner", "note", "updated_at")})
+        readiness_json = json.dumps(items)
+
+    with get_connection() as conn:
+        conn.execute(
+            """UPDATE briefs SET brief_json = ?, claims_finding_text = ?, original_claims_text = ?, claims_edited_at = NULL,
+                                 claims_status = 'Draft', readiness_json = ? WHERE id = ?""",
+            (brief_json, text, text, readiness_json, brief_id),
+        )
+        conn.commit()
     return get_brief(brief_id)
 
 

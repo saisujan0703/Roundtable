@@ -79,6 +79,13 @@ def list_tags() -> List[str]:
     return sorted(_data()["claims"]["risk_category_tag"].dropna().unique().tolist())
 
 
+def _tags(tag_value) -> List[str]:
+    """A risk pattern is one tag or several pooled with '+' (proxy analysis), e.g. 'battery_fault+vehiclefire'."""
+    if isinstance(tag_value, (list, tuple)):
+        return [t for t in tag_value if t]
+    return [t.strip() for t in str(tag_value).split("+") if t.strip()]
+
+
 def _r(x, n=2):
     return None if x is None or pd.isna(x) else round(float(x), n)
 
@@ -94,7 +101,7 @@ def _s(x):
 def get_tag_scope(tag_value: str) -> dict:
     d = _data()
     c = d["claims"]
-    tc = c[c["risk_category_tag"] == tag_value]
+    tc = c[c["risk_category_tag"].isin(_tags(tag_value))]
     if tc.empty:
         return {"tag_value": tag_value, "has_data": False, "products": [], "powertrain": None}
     share = tc["product_code"].value_counts(normalize=True)
@@ -118,7 +125,7 @@ def _scope_frames(tag_value: str):
     if scope["powertrain"]:
         base_c = base_c[base_c["vehicle_powertrain"] == scope["powertrain"]]
         base_e = base_e[base_e["vehicle_powertrain"] == scope["powertrain"]]
-    tag_c = base_c[base_c["risk_category_tag"] == tag_value]
+    tag_c = base_c[base_c["risk_category_tag"].isin(_tags(tag_value))]
     return scope, tag_c, base_c, base_e
 
 
@@ -211,7 +218,7 @@ def get_severity_profile(tag_value: str) -> dict:
     scope, tc, bc, be = _scope_frames(tag_value)
     if tc.empty:
         return {"has_data": False}
-    sev, base_sev = _severity(tc), _severity(bc[bc["risk_category_tag"] != tag_value])
+    sev, base_sev = _severity(tc), _severity(bc[~bc["risk_category_tag"].isin(_tags(tag_value))])
     closed_paid = tc[(tc["claim_state"] == "closed") & (tc["paid_loss"] > 0)]["paid_loss"]
     return {
         "has_data": True,
@@ -379,7 +386,7 @@ def get_coverage_gap_signals(tag_value: str) -> dict:
     if tc.empty:
         return {"has_data": False}
     closed = tc[tc["claim_state"] == "closed"]
-    base_closed = bc[(bc["claim_state"] == "closed") & (bc["risk_category_tag"] != tag_value)]
+    base_closed = bc[(bc["claim_state"] == "closed") & (~bc["risk_category_tag"].isin(_tags(tag_value)))]
     denied = tc[tc["coverage_denied_flag"] == 1]
     gap = denied[denied["denial_reason"].isin(GAP_DENIAL_REASONS)]
     ex = _data()["exposures"]
@@ -412,7 +419,7 @@ def get_claim_handling_metrics(tag_value: str) -> dict:
     if tc.empty:
         return {"has_data": False}
     val = _data()["valuation"]
-    base = bc[bc["risk_category_tag"] != tag_value]
+    base = bc[~bc["risk_category_tag"].isin(_tags(tag_value))]
     closed = tc[tc["claim_state"] == "closed"]
     cycle = (closed["close_date"] - closed["reported_date"]).dt.days
     base_closed = base[base["claim_state"] == "closed"]
@@ -475,7 +482,7 @@ def get_reserve_development(tag_value: str) -> dict:
         per = df["claim_amount"] / df["initial_reserve"]
         return ratio, per.median(), (per > 1.25).mean()
 
-    base = bc[bc["risk_category_tag"] != tag_value]
+    base = bc[~bc["risk_category_tag"].isin(_tags(tag_value))]
     r, med, adverse = dev(tc)
     br, bmed, badverse = dev(base)
     by_ay = []
@@ -570,7 +577,13 @@ def _all_fitted_trends(version: float) -> tuple:
 
 def get_relative_growth_benchmark(tag_value: str) -> dict:
     """This tag's fitted annual frequency trend vs the average across all other tags."""
+    tags = _tags(tag_value)
     trends = dict(_all_fitted_trends(_db_version()))
+    if len(tags) > 1:   # pooled proxy pattern: fit it as one pattern, compare with tags outside the pool
+        fit = fit_frequency_trend(tag_value)
+        trends = {k: v for k, v in trends.items() if k not in tags}
+        if fit["has_data"]:
+            trends[tag_value] = fit["annual_trend_pct"]
     if tag_value not in trends or len(trends) < 2:
         return {"has_data": False, "narrative": "Insufficient credible accident years to benchmark frequency growth."}
     others = [v for k, v in trends.items() if k != tag_value]
@@ -635,6 +648,39 @@ def get_sample_claims_for_tag(tag_value: str, n: int = 3) -> list[dict]:
             "denial_reason": _s(r["denial_reason"]), "litigation_status": _s(r["litigation_status"]),
         })
     return out[:n]
+
+
+# =========================================================================
+# Line-of-business baseline (no direct or proxy risk pattern to measure)
+# =========================================================================
+def get_line_baseline(product_codes: List[str]) -> dict:
+    """Whole-line claims experience: the starting point for a product with no comparable risk pattern."""
+    d = _data()
+    c, e = d["claims"], d["earned"]
+    lc, le = c[c["product_code"].isin(product_codes)], e[e["product_code"].isin(product_codes)]
+    expo, prem = float(le["earned_exposure"].sum()), float(le["earned_premium"].sum())
+    if lc.empty or expo <= 0:
+        return {"has_data": False, "products": product_codes}
+    sev = _severity(lc)
+    closed = lc[lc["claim_state"] == "closed"]
+    causes = lc.groupby("risk_category_tag").agg(claims=("claim_id", "size"), incurred=("claim_amount", "sum"))
+    causes = causes.sort_values("claims", ascending=False).head(8)
+    return {
+        "has_data": True,
+        "products": product_codes,
+        "valuation_date": valuation_date(),
+        "claims": int(len(lc)),
+        "earned_exposure": _r(expo),
+        "frequency_per_1000": _r(1000 * len(lc) / expo),
+        "avg_severity": _r(sev.mean()),
+        "median_severity": _r(sev.median()),
+        "p90_severity": _r(sev.quantile(0.9)),
+        "loss_ratio_pct": _r(100 * lc["total_incurred"].sum() / prem, 1) if prem > 0 else None,
+        "denial_rate_pct": _r(100 * closed["coverage_denied_flag"].mean(), 1) if len(closed) else None,
+        "litigation_rate_pct": _r(100 * lc["litigation_flag"].mean(), 1),
+        "top_patterns": [{"tag_value": k, "claims": int(r.claims), "share_pct": _r(100 * r.claims / len(lc), 1),
+                          "avg_incurred": _r(r.incurred / r.claims)} for k, r in causes.iterrows()],
+    }
 
 
 # =========================================================================

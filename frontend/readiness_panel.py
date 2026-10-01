@@ -21,7 +21,7 @@ def _md(text: Optional[str]) -> str:
 def render_readiness(brief: Dict[str, Any], data: Optional[Dict[str, Any]],
                      save_item: Callable[[str, Dict[str, str]], bool]) -> None:
     """Render the checklist. *save_item(item_id, {status, owner, note})* persists one item."""
-    st.markdown("### ✅ Claims Readiness")
+    st.markdown("### Claims Readiness")
     st.caption("What Claims must have in place before this product launches. Guidance is tailored from this brief's "
                "claims data; status, owner and notes are recorded per item.")
     if not data:
