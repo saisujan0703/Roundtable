@@ -21,6 +21,8 @@ import streamlit as st
 
 from claims_dashboard import render_claims_dashboard
 from readiness_panel import render_readiness
+from guideline_panel import render_guideline
+from scenarios_panel import render_scenarios
 from home_page import money_short, portfolio_stats, render_home, sculpture_svg
 
 # Backend API Base URL
@@ -83,10 +85,11 @@ def api_get_brief(brief_id: int) -> Optional[Dict[str, Any]]:
     return None
 
 
-def api_create_brief(title: str, tag_value: Optional[str] = None,
-                     proxy_tags: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+def api_create_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Optional[List[str]] = None,
+                     idea_context: Optional[str] = None) -> Optional[Dict[str, Any]]:
     try:
-        payload: Dict[str, Any] = {"title": title, "tag_value": tag_value, "proxy_tags": proxy_tags or None}
+        payload: Dict[str, Any] = {"title": title, "tag_value": tag_value, "proxy_tags": proxy_tags or None,
+                                   "idea_context": idea_context or None}
         r = requests.post(
             f"{API_BASE_URL}/briefs",
             json=payload,
@@ -98,6 +101,152 @@ def api_create_brief(title: str, tag_value: Optional[str] = None,
     except Exception as e:
         st.error(f"Connection error to backend: {e}. Is 'python -m uvicorn backend.main:app' running?")
     return None
+
+
+def api_refine_idea(messages: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+    try:
+        r = requests.post(f"{API_BASE_URL}/ideas/refine", json={"messages": messages}, timeout=60)
+        if r.status_code == 200:
+            return r.json()
+        st.error(f"Idea assistant failed ({r.status_code}): {r.text}")
+    except Exception as e:
+        st.error(f"Connection error to backend: {e}. Is 'python -m uvicorn backend.main:app' running?")
+    return None
+
+
+def api_transcribe(audio: bytes) -> Optional[str]:
+    """Speech-to-text on the backend (local Whisper). None on failure, after showing the error."""
+    try:
+        r = requests.post(f"{API_BASE_URL}/ideas/transcribe",
+                          files={"audio": ("idea.wav", audio, "audio/wav")}, timeout=180)
+        if r.status_code == 200:
+            return r.json().get("text", "").strip()
+        detail = r.json().get("detail", r.text) if r.headers.get("content-type", "").startswith("application/json") else r.text
+        st.error(f"Voice transcription failed ({r.status_code}): {detail}")
+    except Exception as e:
+        st.error(f"Connection error to backend: {e}. Is 'python -m uvicorn backend.main:app' running?")
+    return None
+
+
+TAG_AUTO = "(Optional) Auto-detect from title"
+
+
+def render_idea_assistant(available_tags: List[str]) -> None:
+    """Chat where a PM describes a product idea in their own words and gets a title + risk patterns for the form."""
+    ss = st.session_state
+    ss.setdefault("idea_chat", [])
+    ss.setdefault("idea_suggestion", None)
+
+    def _apply(title: str, tag: Optional[str], proxies: List[str]) -> None:
+        ss.new_brief_title = title[:150]
+        ss.new_brief_tag = tag if tag in available_tags else TAG_AUTO
+        ss.new_brief_proxies = [p for p in proxies if p in available_tags]
+        # The PM's own words go to the brief as background (latest 4,000 chars, the backend's limit)
+        ss.new_brief_context = "\n\n".join(m["content"] for m in ss.idea_chat if m["role"] == "user")[-4000:]
+
+    def _reset() -> None:
+        ss.idea_chat = []
+        ss.idea_suggestion = None
+
+    with st.container(border=True, key="idea_assistant"):
+        head_l, head_r = st.columns([5, 1])
+        head_l.markdown(
+            "**💬 Not sure what to call it?** Describe the product idea in your own words — type it or press "
+            "the 🎙️ mic and say it — who it's for and what loss it should cover, and I'll suggest a title and risk patterns.  \n"
+            "*e.g. \"I'm thinking of launching cover for gig drivers whose personal auto policy won't pay while they're "
+            "on a delivery.\"*"
+        )
+        if ss.idea_chat:
+            head_r.button("Start over", key="idea_reset", on_click=_reset, use_container_width=True)
+
+        history = st.container(height=320) if len(ss.idea_chat) > 4 else st.container()
+        with history:
+            for m in ss.idea_chat:
+                with st.chat_message(m["role"]):
+                    if m.get("spoken"):
+                        st.caption("🎙️ Transcribed from your recording")
+                    st.markdown(m["content"])
+
+        sug = ss.idea_suggestion
+        if sug and sug.get("ready") and sug.get("title_options"):
+            tag, proxies = sug.get("risk_tag"), sug.get("proxy_tags") or []
+            if tag:
+                st.caption(f"Risk pattern: `{tag}`")
+            elif proxies:
+                st.caption("No direct claims pattern — proxy history: " + ", ".join(f"`{p}`" for p in proxies))
+            else:
+                st.caption("No related claims pattern — the brief will use the line-of-business baseline.")
+            for i, title in enumerate(sug["title_options"]):
+                st.button(f"Use “{title}”", key=f"idea_use_{i}", on_click=_apply, args=(title, tag, proxies),
+                          use_container_width=True)
+
+        # Keep the placeholder to one line: in Streamlit 1.64 a wrapping placeholder switches the box to its
+        # multi-line layout, where the mic fails with "Record backend not initialized"
+        submitted = st.chat_input("Type your idea, or press the mic and say it",
+                                  key="idea_chat_input", max_chars=4000, accept_audio=True)
+        prompt, spoken = "", False
+        if submitted:
+            prompt = (submitted.text or "").strip()
+            if submitted.audio is not None:
+                with st.spinner("Transcribing your recording..."):
+                    transcript = api_transcribe(submitted.audio.getvalue())
+                if transcript is None:
+                    return
+                if not transcript:
+                    st.warning("I couldn't hear any speech in that recording — try again a little closer to the mic.")
+                    return
+                prompt, spoken = f"{prompt} {transcript}".strip()[:4000], True
+        if prompt:
+            ss.idea_chat.append({"role": "user", "content": prompt, "spoken": spoken})
+            with st.spinner("Thinking about your idea..."):
+                # Turns alternate and end on the PM's, so the last 19 always start with a user turn too
+                result = api_refine_idea([{"role": m["role"], "content": m["content"]} for m in ss.idea_chat[-19:]])
+            if result:
+                ss.idea_chat.append({"role": "assistant", "content": result.get("reply") or "Here are some options."})
+                ss.idea_suggestion = result
+            else:
+                ss.idea_chat.pop()  # let the PM resend instead of leaving an unanswered turn
+            st.rerun()
+
+
+def _guideline_call(method: str, path: str, timeout: int = 10, **kw) -> Optional[Dict[str, Any]]:
+    try:
+        r = requests.request(method, f"{API_BASE_URL}/briefs/{path}", timeout=timeout, **kw)
+        if r.status_code == 200:
+            return r.json()
+        detail = r.json().get("detail", r.text) if r.headers.get("content-type", "").startswith("application/json") else r.text
+        st.error(f"Request failed ({r.status_code}): {detail}")
+    except Exception as e:
+        st.error(f"Connection error to backend: {e}")
+    return None
+
+
+def api_get_guideline(brief_id: int) -> Optional[Dict[str, Any]]:
+    return _guideline_call("GET", f"{brief_id}/guideline")
+
+
+def api_draft_guideline(brief_id: int) -> bool:
+    return _guideline_call("POST", f"{brief_id}/guideline", timeout=180) is not None
+
+
+def api_save_guideline_section(brief_id: int, key: str, body: str) -> bool:
+    return _guideline_call("PUT", f"{brief_id}/guideline/sections/{key}", json={"body": body}) is not None
+
+
+def api_approve_guideline(brief_id: int) -> bool:
+    return _guideline_call("PUT", f"{brief_id}/guideline/approve") is not None
+
+
+def api_get_scenarios(brief_id: int) -> Optional[Dict[str, Any]]:
+    return _guideline_call("GET", f"{brief_id}/scenarios")
+
+
+def api_generate_scenarios(brief_id: int) -> bool:
+    return _guideline_call("POST", f"{brief_id}/scenarios", timeout=180) is not None
+
+
+def api_save_scenario(brief_id: int, scenario_id: str, fields: Dict[str, str]) -> bool:
+    return _guideline_call("PUT", f"{brief_id}/scenarios/{scenario_id}", json=fields) is not None
 
 
 def api_rerun_proxies(brief_id: int, proxy_tags: List[str]) -> bool:
@@ -275,6 +424,11 @@ if all_briefs:
         f"#{b['id']} - {b['title']} ({b['claims_status']})": b["id"]
         for b in all_briefs
     }
+    # A brief generated on the last run opens straight away (set before the picker is drawn)
+    open_id = st.session_state.pop("open_brief_id", None)
+    open_label = next((lbl for lbl, bid in brief_options.items() if bid == open_id), None)
+    if open_label:
+        st.session_state.brief_picker = open_label
     selected_label = st.sidebar.selectbox(
         "Open a brief",
         options=list(brief_options.keys()),
@@ -538,24 +692,29 @@ elif st.session_state.current_view in ("claims", "actuarial"):
     # Section 1: New Brief Creation
     # -----------------------------------------------------------------------
     with st.expander("Create New Product Decision Brief", expanded=(not bool(selected_brief_id))):
+        available_tags = api_get_tags()
+        render_idea_assistant(available_tags)
+
         col_t, col_tag, col_btn = st.columns([3, 2, 1.2])
 
         with col_t:
+            st.session_state.setdefault("new_brief_title", "EV High-Voltage Battery Coverage Gap")
             prod_title = st.text_input(
                 "Product Idea Title",
-                value="EV High-Voltage Battery Coverage Gap",
+                key="new_brief_title",
                 max_chars=150,
                 placeholder="e.g. Cyber Extortion Endorsement or Drone Hull Coverage",
                 help="Maximum 150 characters.",
             )
 
         with col_tag:
-            available_tags = api_get_tags()
-            tag_options = ["(Optional) Auto-detect from title"] + available_tags
+            tag_options = [TAG_AUTO] + available_tags
+            if st.session_state.get("new_brief_tag") not in tag_options:
+                st.session_state.new_brief_tag = TAG_AUTO
             selected_tag_opt = st.selectbox(
                 "Underlying Risk Tag",
                 options=tag_options,
-                index=0,
+                key="new_brief_tag",
                 help="Optional: select if this matches an existing internal risk pattern. External research will run regardless of selection.",
             )
             st.caption("Optional: select if this matches an existing internal risk pattern. External research will run regardless of selection.")
@@ -565,9 +724,11 @@ elif st.session_state.current_view in ("claims", "actuarial"):
             st.write("")
             generate_clicked = st.button("Generate Brief", type="primary", use_container_width=True)
 
+        st.session_state.new_brief_proxies = [p for p in st.session_state.get("new_brief_proxies", []) if p in available_tags]
         new_proxy_tags = st.multiselect(
             "Proxy risk patterns (used only if the title matches no risk pattern of its own)",
             options=available_tags,
+            key="new_brief_proxies",
             max_selections=3,
             placeholder="Optional — leave empty to auto-suggest from the title",
             help="A brand-new product has no claims history. The claims analysis then pools the claims of these related "
@@ -575,16 +736,35 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                  "line-of-business baseline is shown instead.",
         )
 
+        idea_context = st.session_state.get("new_brief_context")
+        if idea_context:
+            preview = idea_context if len(idea_context) <= 220 else idea_context[:220] + "…"
+            use_context = st.checkbox(
+                "Attach my idea description as background for the brief",
+                value=True, key="new_brief_use_context",
+                help="Claude uses it to understand the intended customer and loss. It is never treated as evidence: "
+                     "numbers and citations still come only from claims data and research.",
+            )
+            st.caption(f"“{preview}”")
+        else:
+            use_context = False
+
         if generate_clicked:
             if not prod_title.strip():
                 st.error("Please provide a valid product title.")
             elif len(prod_title.strip()) > 150:
                 st.error("Product Idea Title exceeds maximum limit of 150 characters. Please shorten it.")
             else:
-                chosen_tag = None if selected_tag_opt.startswith("(Optional)") else selected_tag_opt
+                chosen_tag = None if selected_tag_opt == TAG_AUTO else selected_tag_opt
                 with st.spinner("Analyzing claims database and retrieving evidence..."):
-                    created = api_create_brief(prod_title.strip(), chosen_tag, new_proxy_tags)
+                    created = api_create_brief(prod_title.strip(), chosen_tag, new_proxy_tags,
+                                               idea_context if use_context else None)
                     if created:
+                        # The next idea starts fresh
+                        st.session_state.new_brief_context = None
+                        st.session_state.idea_chat = []
+                        st.session_state.idea_suggestion = None
+                        st.session_state.open_brief_id = created["id"]
                         st.success(f"Brief #{created['id']} generated successfully!")
                         st.rerun()
 
@@ -620,6 +800,10 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                 f'<div class="status"><small>Sign-off status</small><span class="status-badge {badge_class}">{status.upper()}</span></div></div>',
                 unsafe_allow_html=True,
             )
+            pm_context = (brief.get("brief_data") or {}).get("idea_context")
+            if pm_context:
+                with st.expander("PM's idea description (background, not evidence)"):
+                    st.markdown(pm_context)
 
             # Organize tabs according to the selected workspace
             if is_actuarial_view:
@@ -630,11 +814,14 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                     "Regulatory compliance",
                     "Live web research",
                 ])
-                tab_readiness = None
+                tab_readiness = tab_guideline = tab_scenarios = None
             else:
-                tab_primary, tab_readiness, tab_market, tab_underwriting, tab_compliance, tab_external = st.tabs([
+                (tab_primary, tab_readiness, tab_guideline, tab_scenarios, tab_market, tab_underwriting, tab_compliance,
+                 tab_external) = st.tabs([
                     "Claims review",
                     "Claims readiness",
+                    "Handling guideline",
+                    "Test scenarios",
                     "Competitor intelligence",
                     "Underwriting review",
                     "Regulatory compliance",
@@ -899,6 +1086,21 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                         brief,
                         api_get_readiness(brief["id"]),
                         save_item=lambda item_id, fields, bid=brief["id"]: api_update_readiness(bid, item_id, fields),
+                    )
+                with tab_guideline:
+                    render_guideline(
+                        brief,
+                        api_get_guideline(brief["id"]),
+                        draft=lambda bid=brief["id"]: api_draft_guideline(bid),
+                        save_section=lambda key, body, bid=brief["id"]: api_save_guideline_section(bid, key, body),
+                        approve=lambda bid=brief["id"]: api_approve_guideline(bid),
+                    )
+                with tab_scenarios:
+                    render_scenarios(
+                        brief,
+                        api_get_scenarios(brief["id"]),
+                        generate=lambda bid=brief["id"]: api_generate_scenarios(bid),
+                        save=lambda sid, fields, bid=brief["id"]: api_save_scenario(bid, sid, fields),
                     )
 
             # ---------------------------------------------------------------

@@ -172,6 +172,11 @@ class ProductBrief(BaseModel):
         default_factory=list,
         description="Related risk patterns pooled as proxy claims history when the product has none of its own."
     )
+    idea_context: Optional[str] = Field(
+        default=None,
+        max_length=4000,
+        description="The product manager's own description of the idea (from the idea assistant), used as background only."
+    )
     problem_statement: str = Field(
         ...,
         description="High-level summary of the market opportunity or coverage gap."
