@@ -23,6 +23,7 @@ from claims_dashboard import render_claims_dashboard
 from readiness_panel import render_readiness
 from guideline_panel import render_guideline
 from scenarios_panel import render_scenarios
+from letters_panel import render_letters
 from home_page import money_short, portfolio_stats, render_home, sculpture_svg
 
 # Backend API Base URL
@@ -247,6 +248,22 @@ def api_generate_scenarios(brief_id: int) -> bool:
 
 def api_save_scenario(brief_id: int, scenario_id: str, fields: Dict[str, str]) -> bool:
     return _guideline_call("PUT", f"{brief_id}/scenarios/{scenario_id}", json=fields) is not None
+
+
+def api_get_letters(brief_id: int) -> Optional[Dict[str, Any]]:
+    return _guideline_call("GET", f"{brief_id}/letters")
+
+
+def api_draft_letters(brief_id: int) -> bool:
+    return _guideline_call("POST", f"{brief_id}/letters", timeout=180) is not None
+
+
+def api_save_letter(brief_id: int, key: str, subject: str, body: str) -> bool:
+    return _guideline_call("PUT", f"{brief_id}/letters/{key}", json={"subject": subject, "body": body}) is not None
+
+
+def api_approve_letter(brief_id: int, key: str) -> bool:
+    return _guideline_call("PUT", f"{brief_id}/letters/{key}/approve") is not None
 
 
 def api_rerun_proxies(brief_id: int, proxy_tags: List[str]) -> bool:
@@ -814,14 +831,15 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                     "Regulatory compliance",
                     "Live web research",
                 ])
-                tab_readiness = tab_guideline = tab_scenarios = None
+                tab_readiness = tab_guideline = tab_scenarios = tab_letters = None
             else:
-                (tab_primary, tab_readiness, tab_guideline, tab_scenarios, tab_market, tab_underwriting, tab_compliance,
-                 tab_external) = st.tabs([
+                (tab_primary, tab_readiness, tab_guideline, tab_scenarios, tab_letters, tab_market, tab_underwriting,
+                 tab_compliance, tab_external) = st.tabs([
                     "Claims review",
                     "Claims readiness",
                     "Handling guideline",
                     "Test scenarios",
+                    "Customer letters",
                     "Competitor intelligence",
                     "Underwriting review",
                     "Regulatory compliance",
@@ -1095,12 +1113,22 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                         save_section=lambda key, body, bid=brief["id"]: api_save_guideline_section(bid, key, body),
                         approve=lambda bid=brief["id"]: api_approve_guideline(bid),
                     )
+                letters_data = api_get_letters(brief["id"])
                 with tab_scenarios:
                     render_scenarios(
                         brief,
                         api_get_scenarios(brief["id"]),
                         generate=lambda bid=brief["id"]: api_generate_scenarios(bid),
                         save=lambda sid, fields, bid=brief["id"]: api_save_scenario(bid, sid, fields),
+                        letters=letters_data,
+                    )
+                with tab_letters:
+                    render_letters(
+                        brief,
+                        letters_data,
+                        draft=lambda bid=brief["id"]: api_draft_letters(bid),
+                        save=lambda key, subject, body, bid=brief["id"]: api_save_letter(bid, key, subject, body),
+                        approve=lambda key, bid=brief["id"]: api_approve_letter(bid, key),
                     )
 
             # ---------------------------------------------------------------

@@ -22,6 +22,7 @@ from backend.idea_assistant import refine_idea
 from backend import speech
 from backend import guideline as handling_guideline
 from backend import scenarios as test_scenarios
+from backend import letters as customer_letters
 
 app = FastAPI(
     title="Roundtable Decision Support API",
@@ -60,7 +61,7 @@ def init_db() -> None:
         existing = {r["name"] for r in conn.execute("PRAGMA table_info(briefs)").fetchall()}
         for col, ddl in (("original_claims_text", "TEXT"), ("claims_edited_at", "TEXT"), ("section_notes", "TEXT"),
                          ("readiness_json", "TEXT"), ("guideline_json", "TEXT"),
-                         ("scenarios_json", "TEXT")):
+                         ("scenarios_json", "TEXT"), ("letters_json", "TEXT")):
             if col not in existing:
                 conn.execute(f"ALTER TABLE briefs ADD COLUMN {col} {ddl}")
         # Briefs created before tracking existed: their current text becomes the baseline
@@ -127,6 +128,11 @@ class ScenarioUpdateRequest(BaseModel):
     status: Optional[str] = None
     tester: Optional[str] = Field(None, max_length=100)
     note: Optional[str] = Field(None, max_length=2000)
+
+
+class LetterEditRequest(BaseModel):
+    subject: str = Field(..., min_length=1, max_length=200)
+    body: str = Field(..., min_length=1, max_length=customer_letters.MAX_LETTER_CHARS)
 
 
 class ReadinessUpdateRequest(BaseModel):
@@ -590,3 +596,101 @@ def update_test_scenario(brief_id: int, scenario_id: str, req: ScenarioUpdateReq
         conn.execute("UPDATE briefs SET scenarios_json = ? WHERE id = ?", (json.dumps(record), brief_id))
         conn.commit()
     return _scenarios_response(brief_id, row, record)
+
+
+# ---------------------------------------------------------------------------
+# Customer letter templates (built from the handling guideline)
+# ---------------------------------------------------------------------------
+def _load_letters_row(conn, brief_id: int):
+    row = conn.execute("SELECT title, brief_json, guideline_json, letters_json FROM briefs WHERE id = ?",
+                       (brief_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Brief #{brief_id} not found")
+    return row, (json.loads(row["letters_json"]) if row["letters_json"] else None)
+
+
+def _letters_response(brief_id: int, row, record: Optional[dict]) -> dict:
+    g = json.loads(row["guideline_json"]) if row["guideline_json"] else None
+    if record:
+        for l in record["letters"]:
+            l["tbd_count"] = customer_letters.unresolved_tbds(l)
+    return {
+        "brief_id": brief_id,
+        "has_guideline": g is not None,
+        "guideline_approved": bool(g and g.get("status") == "Approved"),
+        "letters": record,
+        "stale": bool(record and record.get("guideline_version") != test_scenarios.guideline_version(g)),
+        "merge_fields": customer_letters.MERGE_FIELDS,
+        "scenario_letters": customer_letters.SCENARIO_LETTERS,
+        "markdown": customer_letters.to_markdown(row["title"], record) if record else None,
+    }
+
+
+def _save_letters(conn, brief_id: int, record: dict) -> None:
+    for l in record["letters"]:
+        l.pop("tbd_count", None)
+    conn.execute("UPDATE briefs SET letters_json = ? WHERE id = ?", (json.dumps(record), brief_id))
+    conn.commit()
+
+
+@app.get("/api/briefs/{brief_id}/letters")
+def get_letters(brief_id: int):
+    """Customer letter templates for a brief (null until drafted), with approval state and staleness."""
+    with get_connection() as conn:
+        row, record = _load_letters_row(conn, brief_id)
+    return _letters_response(brief_id, row, record)
+
+
+@app.post("/api/briefs/{brief_id}/letters")
+def draft_letters(brief_id: int):
+    """(Re)draft every letter from the current guideline. Refused once any letter is approved."""
+    with get_connection() as conn:
+        row, record = _load_letters_row(conn, brief_id)
+    if not row["guideline_json"]:
+        raise HTTPException(status_code=409, detail="Draft the handling guideline first; the letters are built from it.")
+    g = json.loads(row["guideline_json"])
+    # Approvals given against an older guideline no longer count, so stale letters can always be redrafted
+    stale = bool(record and record.get("guideline_version") != test_scenarios.guideline_version(g))
+    if record and not stale and any(l["status"] == "Approved" for l in record["letters"]):
+        raise HTTPException(status_code=409, detail="Some letters are approved; edit them individually instead of redrafting all.")
+    brief = json.loads(row["brief_json"]) if row["brief_json"] else {"title": row["title"]}
+    record = customer_letters.generate_letters(brief, g, handling_guideline.to_markdown(row["title"], g))
+    with get_connection() as conn:
+        _save_letters(conn, brief_id, record)
+        row, record = _load_letters_row(conn, brief_id)
+    return _letters_response(brief_id, row, record)
+
+
+@app.put("/api/briefs/{brief_id}/letters/{key}")
+def edit_customer_letter(brief_id: int, key: str, req: LetterEditRequest):
+    """Reviewer edit of one letter's subject and body; the letter returns to Draft."""
+    with get_connection() as conn:
+        row, record = _load_letters_row(conn, brief_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="No letters drafted for this brief yet.")
+        try:
+            customer_letters.edit_letter(record, key, req.subject, req.body)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Unknown letter '{key}'")
+        _save_letters(conn, brief_id, record)
+    return _letters_response(brief_id, row, record)
+
+
+@app.put("/api/briefs/{brief_id}/letters/{key}/approve")
+def approve_customer_letter(brief_id: int, key: str):
+    """Legal / Claims sign-off on one letter. Requires an approved guideline and current letters."""
+    with get_connection() as conn:
+        row, record = _load_letters_row(conn, brief_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="No letters drafted for this brief yet.")
+        g = json.loads(row["guideline_json"]) if row["guideline_json"] else None
+        if not (g and g.get("status") == "Approved"):
+            raise HTTPException(status_code=409, detail="Approve the handling guideline before approving letters.")
+        if record.get("guideline_version") != test_scenarios.guideline_version(g):
+            raise HTTPException(status_code=409, detail="The guideline changed since these letters were drafted; redraft them first.")
+        try:
+            customer_letters.approve_letter(record, key)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Unknown letter '{key}'")
+        _save_letters(conn, brief_id, record)
+    return _letters_response(brief_id, row, record)

@@ -37,8 +37,14 @@ def _csv(record: Dict[str, Any], categories: Dict[str, str]) -> str:
 
 
 def render_scenarios(brief: Dict[str, Any], data: Optional[Dict[str, Any]], generate: Callable[[], bool],
-                     save: Callable[[str, Dict[str, str]], bool]) -> None:
-    """Render the test scenarios tab. *generate()* and *save(id, {status, tester, note})* call the backend."""
+                     save: Callable[[str, Dict[str, str]], bool], letters: Optional[Dict[str, Any]] = None) -> None:
+    """Render the test scenarios tab. *generate()* and *save(id, {status, tester, note})* call the backend.
+
+    *letters* (the Customer letters data) links each scenario to the letter template it should produce.
+    """
+    letter_record = (letters or {}).get("letters") or {}
+    letters_by_key = {l["key"]: l for l in letter_record.get("letters", [])}
+    scenario_letters = (letters or {}).get("scenario_letters") or {}
     st.markdown("### ClaimCenter Test Scenarios")
     st.caption("Test claims to run through ClaimCenter before go-live, built from this brief's handling guideline: "
                "every decision-tree branch, plus SIU, large-loss and recovery cases, with the result the guideline "
@@ -109,6 +115,13 @@ def render_scenarios(brief: Dict[str, Any], data: Optional[Dict[str, Any]], gene
                 f"- **{label}:** {_md(s['expected'].get(k))}" for k, label in EXPECTED_LABELS if s["expected"].get(k)))
             if s["guideline_refs"]:
                 st.caption("Tests guideline sections: " + ", ".join(s["guideline_refs"]))
+            wanted = [k for k in scenario_letters.get(s["category"], [])]
+            linked = [l for k in wanted for key, l in letters_by_key.items()
+                      if key == k or (k == "denial_exclusion" and key.startswith("denial_exclusion"))]
+            if linked:
+                st.caption("Letter template to check: " + ", ".join(
+                    f"{l['name']} ({'approved' if l['status'] == 'Approved' else 'draft'})" for l in linked)
+                    + " — see the Customer letters tab.")
 
             key = f"sc_{bid}_{s['id']}"
             with st.form(key=f"{key}_form", border=False):
