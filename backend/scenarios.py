@@ -14,10 +14,10 @@ incomplete proof) plus SIU, large-loss and recovery cases, each with FNOL data, 
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from backend import llm_client
 from backend.guideline import build_facts
 
 STATUSES = ("Not run", "Pass", "Fail", "Blocked")
@@ -140,13 +140,8 @@ def _fallback(brief: Dict[str, Any], facts: Dict[str, Any]) -> List[Dict[str, An
     ]
 
 
-def _claude(brief: Dict[str, Any], facts: Dict[str, Any], guideline_md: str) -> Optional[List[Dict[str, Any]]]:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return None
-    try:
-        import anthropic
-    except ImportError:
+def _llm(brief: Dict[str, Any], facts: Dict[str, Any], guideline_md: str) -> Optional[List[Dict[str, Any]]]:
+    if llm_client.provider() is None:
         return None
     from backend.guideline import SECTION_KEYS
     item = {
@@ -178,42 +173,36 @@ def _claude(brief: Dict[str, Any], facts: Dict[str, Any], guideline_md: str) -> 
     message = (f"<product>{json.dumps({'title': brief.get('title')})}</product>\n\n"
                f"<guideline>\n{guideline_md}\n</guideline>\n\n"
                f"<claims_facts>\n{json.dumps(facts, indent=1)}\n</claims_facts>")
-    client = anthropic.Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5"), max_tokens=8000, system=SCENARIO_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": message}], tools=[tool],
-        tool_choice={"type": "tool", "name": "submit_scenarios"})
-    for block in response.content:
-        if block.type == "tool_use" and block.name == "submit_scenarios":
-            out = []
-            valid = [s for s in block.input.get("scenarios") or [] if s.get("category") in CATEGORIES]
-            for n, s in enumerate(valid, start=1):
-                out.append(_scenario(
-                    f"S{n:02d}", s["category"], str(s.get("title") or CATEGORIES[s["category"]]), str(s.get("setup") or ""),
-                    {"loss_description": str(s.get("loss_description") or ""),
-                     "days_after_policy_inception": int(s.get("days_after_policy_inception") or 0),
-                     "reported_days_after_loss": int(s.get("reported_days_after_loss") or 0),
-                     "amount_label": s.get("amount_label") if s.get("amount_label") in AMOUNT_LABELS else "typical"},
-                    [str(x) for x in s.get("steps") or []],
-                    {"coverage": str(s.get("expected_coverage") or ""), "reserve": str(s.get("expected_reserve") or ""),
-                     "routing": str(s.get("expected_routing") or ""), "siu": str(s.get("expected_siu") or ""),
-                     "letter": str(s.get("expected_letter") or "")},
-                    [r for r in s.get("guideline_refs") or [] if r in SECTION_KEYS]))
-            return out or None
-    raise RuntimeError("Claude did not submit scenarios.")
+    data = llm_client.structured_call(SCENARIO_SYSTEM_PROMPT, [{"role": "user", "content": message}], tool["name"],
+                                      tool["description"], tool["input_schema"], max_tokens=8000)
+    out = []
+    valid = [s for s in data.get("scenarios") or [] if s.get("category") in CATEGORIES]
+    for n, s in enumerate(valid, start=1):
+        out.append(_scenario(
+            f"S{n:02d}", s["category"], str(s.get("title") or CATEGORIES[s["category"]]), str(s.get("setup") or ""),
+            {"loss_description": str(s.get("loss_description") or ""),
+             "days_after_policy_inception": int(s.get("days_after_policy_inception") or 0),
+             "reported_days_after_loss": int(s.get("reported_days_after_loss") or 0),
+             "amount_label": s.get("amount_label") if s.get("amount_label") in AMOUNT_LABELS else "typical"},
+            [str(x) for x in s.get("steps") or []],
+            {"coverage": str(s.get("expected_coverage") or ""), "reserve": str(s.get("expected_reserve") or ""),
+             "routing": str(s.get("expected_routing") or ""), "siu": str(s.get("expected_siu") or ""),
+             "letter": str(s.get("expected_letter") or "")},
+            [r for r in s.get("guideline_refs") or [] if r in SECTION_KEYS]))
+    return out or None
 
 
 def generate_scenarios(brief: Dict[str, Any], guideline: Dict[str, Any], guideline_md: str) -> Dict[str, Any]:
     """Build the test scenarios for a brief from its handling guideline. Returns the record stored in scenarios_json."""
     facts = build_facts(brief)
-    method, scenarios = "anthropic_claude", None
+    method, scenarios = llm_client.method_name(), None
     try:
-        scenarios = _claude(brief, facts, guideline_md)
+        scenarios = _llm(brief, facts, guideline_md)
     except Exception as e:
         print(f"[NOTE: Live API Error] Scenario generation failed: {type(e).__name__}: {e}")
-        method = "anthropic_claude_error_fallback"
+        method = f"{method}_error_fallback"
     if scenarios is None:
-        if method == "anthropic_claude":
+        if method is None:
             method = "offline_deterministic_fallback"
         scenarios = _fallback(brief, facts)
     amounts = _amounts(facts)

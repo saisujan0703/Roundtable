@@ -923,7 +923,9 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                         gen_method = brief_data.get("generation_method", "N/A")
                         if gen_method == "anthropic_claude":
                             gen_label = "Claude (Live Web)"
-                        elif gen_method == "anthropic_claude_error_fallback":
+                        elif gen_method == "google_gemini":
+                            gen_label = "Gemini (Live Web)"
+                        elif gen_method.endswith("_error_fallback"):
                             gen_label = "API Error Fallback"
                         elif "offline" in gen_method or gen_method == "offline_deterministic_fallback":
                             gen_label = "Deterministic (Offline)"

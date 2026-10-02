@@ -13,11 +13,11 @@ acknowledgement, documents request, reservation of rights, one denial per denial
 from __future__ import annotations
 
 import json
-import os
 import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from backend import llm_client
 from backend.guideline import build_facts
 from backend.scenarios import guideline_version
 
@@ -179,13 +179,8 @@ def _fallback(brief: Dict[str, Any], guideline: Dict[str, Any], reasons: List[Di
 # ---------------------------------------------------------------------------
 # Generation
 # ---------------------------------------------------------------------------
-def _claude(brief: Dict[str, Any], guideline_md: str, reasons: List[Dict[str, str]]) -> Optional[List[Dict[str, Any]]]:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return None
-    try:
-        import anthropic
-    except ImportError:
+def _llm(brief: Dict[str, Any], guideline_md: str, reasons: List[Dict[str, str]]) -> Optional[List[Dict[str, Any]]]:
+    if llm_client.provider() is None:
         return None
     reason_keys = [r["key"] for r in reasons]
     item = {"type": "object", "properties": {
@@ -202,28 +197,23 @@ def _claude(brief: Dict[str, Any], guideline_md: str, reasons: List[Dict[str, st
                f"<merge_fields>{json.dumps(MERGE_FIELDS)}</merge_fields>\n\n"
                "Write one letter for each key: acknowledgement, documents_request, reservation_of_rights, approval, "
                f"and {', '.join(reason_keys)}.")
-    client = anthropic.Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5"), max_tokens=10000, system=LETTER_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": message}], tools=[tool], tool_choice={"type": "tool", "name": "submit_letters"})
-    for block in response.content:
-        if block.type == "tool_use" and block.name == "submit_letters":
-            return [l for l in block.input.get("letters") or [] if l.get("body")]
-    raise RuntimeError("Claude did not submit letters.")
+    data = llm_client.structured_call(LETTER_SYSTEM_PROMPT, [{"role": "user", "content": message}], tool["name"],
+                                      tool["description"], tool["input_schema"], max_tokens=10000)
+    return [l for l in data.get("letters") or [] if l.get("body")]
 
 
 def generate_letters(brief: Dict[str, Any], guideline: Dict[str, Any], guideline_md: str) -> Dict[str, Any]:
     """Draft every letter template for a brief from its guideline. Returns the record stored in letters_json."""
     reasons = _denial_reasons(build_facts(brief))
-    templates = _fallback(brief, guideline, reasons)  # also the per-letter fallback when Claude skips one
-    method, drafted = "anthropic_claude", None
+    templates = _fallback(brief, guideline, reasons)  # also the per-letter fallback when the model skips one
+    method, drafted = llm_client.method_name(), None
     try:
-        drafted = _claude(brief, guideline_md, reasons)
+        drafted = _llm(brief, guideline_md, reasons)
     except Exception as e:
         print(f"[NOTE: Live API Error] Letter drafting failed: {type(e).__name__}: {e}")
-        method = "anthropic_claude_error_fallback"
+        method = f"{method}_error_fallback"
     if drafted is None:
-        if method == "anthropic_claude":
+        if method is None:
             method = "offline_deterministic_fallback"
         letters = templates
     else:

@@ -223,7 +223,8 @@ class ProductBrief(BaseModel):
     )
     generation_method: str = Field(
         default="anthropic_claude",
-        description="Generation engine used: 'anthropic_claude' or 'offline_deterministic_fallback'"
+        description="Generation engine used: 'anthropic_claude', 'google_gemini', '<provider>_error_fallback' "
+                    "or 'offline_deterministic_fallback'"
     )
     human_approval_required: bool = Field(
         default=True,

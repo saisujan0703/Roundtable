@@ -15,6 +15,8 @@ import streamlit as st
 METHOD_LABEL = {
     "anthropic_claude": "Drafted by Claude",
     "anthropic_claude_error_fallback": "Template draft (Claude call failed)",
+    "google_gemini": "Drafted by Gemini",
+    "google_gemini_error_fallback": "Template draft (Gemini call failed)",
     "offline_deterministic_fallback": "Template draft (offline)",
 }
 SCENARIO_NAMES = {

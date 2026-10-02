@@ -27,6 +27,7 @@ try:
 except ImportError:
     pass
 
+from backend import llm_client
 from backend.analytics import build_claims_analytics, get_line_baseline, list_tags
 from backend.models import (
     BriefEvidence,
@@ -631,7 +632,7 @@ def _deterministic_synthesis(
 ) -> ProductBrief:
     """Deterministic synthesizer adhering strictly to Pydantic constraints.
 
-    Used when running offline or when ANTHROPIC_API_KEY is not configured.
+    Used when running offline or when no LLM provider is configured (see backend.llm_client).
     """
     comp_docs = payload.get("comp_docs", [])
     reg_docs = payload.get("reg_docs", [])
@@ -1026,11 +1027,9 @@ def generate_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Opti
     # 1. Independent External Market Research via Tavily
     ext_ev, ext_status, ext_err = generate_external_market_evidence(title, resolved_tag)
 
-    # 2. Check configured Anthropic API key for Claims & Decision brief synthesis
-    claude_model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-
-    if not api_key:
+    # 2. Brief synthesis by the configured LLM (backend.llm_client: Claude or Gemini); none -> deterministic
+    method = llm_client.method_name()
+    if method is None:
         brief = _deterministic_synthesis(title, resolved_tag, confidence, payload)
         brief.external_market_evidence = ext_ev
         brief.external_market_status = ext_status
@@ -1039,18 +1038,6 @@ def generate_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Opti
         return brief
 
     try:
-        import anthropic
-    except ImportError:
-        brief = _deterministic_synthesis(title, resolved_tag, confidence, payload)
-        brief.external_market_evidence = ext_ev
-        brief.external_market_status = ext_status
-        brief.external_market_error_message = ext_err
-        brief.idea_context = idea_context
-        return brief
-
-    try:
-        client = anthropic.Anthropic(api_key=api_key)
-
         # Guardrail 3: Isolated structured user message preventing prompt injection
         user_message = (
             f"<research_subject>\n"
@@ -1069,7 +1056,7 @@ def generate_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Opti
         )
 
         claude_brief_schema = ProductBrief.model_json_schema()
-        # Exclude external market fields from Claude tool schema (populated server-side by Gemini)
+        # Fields filled server-side (research, analytics, basis, PM context) are not part of the model's output
         if "properties" in claude_brief_schema:
             for field in ("external_market_evidence", "external_market_status", "external_market_error_message", "claims_kpis",
                           "claims_analytics", "analysis_basis", "proxy_tags", "idea_context"):
@@ -1080,32 +1067,13 @@ def generate_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Opti
                 if r not in ("external_market_evidence", "external_market_status", "external_market_error_message")
             ]
 
-        tools = [
-            {
-                "name": "submit_product_brief",
-                "description": "Submit the completed, cited Product Decision Brief.",
-                "input_schema": claude_brief_schema,
-            }
-        ]
+        submitted = llm_client.structured_call(
+            SYSTEM_PROMPT, [{"role": "user", "content": user_message}], "submit_product_brief",
+            "Submit the completed, cited Product Decision Brief.", claude_brief_schema, max_tokens=12000)
 
-        response = client.messages.create(
-            model=claude_model,
-            max_tokens=12000,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
-            tools=tools,
-            tool_choice={"type": "tool", "name": "submit_product_brief"},
-        )
-
-        submitted_block = None
-        for block in response.content:
-            if block.type == "tool_use" and block.name == "submit_product_brief":
-                submitted_block = block
-                break
-
-        if submitted_block:
-            brief = ProductBrief.model_validate(submitted_block.input)
-            brief.generation_method = "anthropic_claude"
+        if submitted:
+            brief = ProductBrief.model_validate(submitted)
+            brief.generation_method = method
             brief.match_confidence = confidence
             # Basis and tag are decided server-side, never by the model
             brief.tag_value = resolved_tag if basis["basis"] == "direct" else None
@@ -1125,12 +1093,12 @@ def generate_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Opti
             brief.idea_context = idea_context
             return brief
 
-        raise RuntimeError("Claude did not submit product brief.")
+        raise RuntimeError("The model did not submit a product brief.")
 
     except Exception as e:
-        print(f"[NOTE: Live API Error] Claude synthesis failed: {type(e).__name__}: {e}")
+        print(f"[NOTE: Live API Error] Brief synthesis failed: {type(e).__name__}: {e}")
         error_brief = _deterministic_synthesis(title, resolved_tag, confidence, payload)
-        error_brief.generation_method = "anthropic_claude_error_fallback"
+        error_brief.generation_method = f"{method}_error_fallback"
         error_brief.external_market_evidence = ext_ev
         error_brief.external_market_status = ext_status
         error_brief.external_market_error_message = ext_err

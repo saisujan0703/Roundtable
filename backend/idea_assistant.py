@@ -7,13 +7,13 @@ into what the brief form needs: a product title, the matching risk tag and proxy
 - Tags and proxies are only ever chosen from the tags present in the claims database;
   anything else the model returns is dropped server-side.
 - The assistant only suggests. The PM picks a title and clicks Generate Brief themselves.
-- Without ANTHROPIC_API_KEY (or the anthropic package) a keyword-based fallback runs instead.
+- Uses the configured LLM (backend.llm_client: Claude or Gemini); without one, a keyword-based fallback runs.
 """
 from __future__ import annotations
 
-import os
 from typing import Any, Dict, List, Optional
 
+from backend import llm_client
 from backend.analytics import list_tags
 from backend.llm import (
     MAX_PROXY_TAGS,
@@ -86,7 +86,7 @@ def _finalize(result: Dict[str, Any], story: str, known: set) -> Dict[str, Any]:
         "risk_tag": tag if ready else None,
         "proxy_tags": proxies if ready else [],
         "product_lines": infer_product_lines(story),
-        "generation_method": result.get("generation_method", "anthropic_claude"),
+        "generation_method": result.get("generation_method") or "keyword_fallback",
     }
 
 
@@ -143,12 +143,7 @@ def refine_idea(messages: List[Dict[str, str]]) -> Dict[str, Any]:
     story = "\n".join(m["content"] for m in messages if m["role"] == "user")
     latest = messages[-1]["content"]
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    try:
-        import anthropic
-    except ImportError:
-        anthropic = None
-    if not api_key or anthropic is None:
+    if llm_client.provider() is None:
         return _finalize(_fallback(story, known, latest), story, known)
 
     tag_list = sorted(known)
@@ -173,20 +168,11 @@ def refine_idea(messages: List[Dict[str, str]]) -> Dict[str, Any]:
     chat[0]["content"] = f"<known_risk_tags>{', '.join(tag_list)}</known_risk_tags>\n\n{chat[0]['content']}"
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5"),
-            max_tokens=1500,
-            system=IDEA_SYSTEM_PROMPT,
-            messages=chat,
-            tools=[tool],
-            tool_choice={"type": "tool", "name": "propose_product"},
-        )
-        for block in response.content:
-            if block.type == "tool_use" and block.name == "propose_product":
-                return _finalize(dict(block.input), story, known)
-    except Exception as e:  # network / auth / rate-limit: fall back rather than break the form
-        result = _fallback(story, known, latest)
-        result["reply"] = f"(Claude unavailable: {type(e).__name__}) " + result["reply"]
+        result = llm_client.structured_call(IDEA_SYSTEM_PROMPT, chat, tool["name"], tool["description"],
+                                            tool["input_schema"], max_tokens=1500)
+        result["generation_method"] = llm_client.method_name()
         return _finalize(result, story, known)
-    return _finalize(_fallback(story, known, latest), story, known)
+    except Exception as e:  # network / auth / rate-limit / bad reply: fall back rather than break the form
+        result = _fallback(story, known, latest)
+        result["reply"] = f"(AI assistant unavailable: {type(e).__name__}) " + result["reply"]
+        return _finalize(result, story, known)

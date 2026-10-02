@@ -14,10 +14,10 @@ Guardrails (same as the brief):
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from backend import llm_client
 from backend.llm import DENIAL_REASON_NAMES, LOSS_CAUSE_NAMES
 
 SECTIONS: List[tuple] = [
@@ -227,13 +227,8 @@ def _fallback_sections(brief: Dict[str, Any], f: Dict[str, Any]) -> Dict[str, st
 # ---------------------------------------------------------------------------
 # Generation
 # ---------------------------------------------------------------------------
-def _claude_sections(brief: Dict[str, Any], facts: Dict[str, Any]) -> Optional[Dict[str, str]]:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return None
-    try:
-        import anthropic
-    except ImportError:
+def _llm_sections(brief: Dict[str, Any], facts: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    if llm_client.provider() is None:
         return None
     product = {"title": brief.get("title"), "problem_statement": brief.get("problem_statement"),
                "claims_recommendation": brief.get("recommendation")}
@@ -249,32 +244,22 @@ def _claude_sections(brief: Dict[str, Any], facts: Dict[str, Any]) -> Optional[D
             "required": SECTION_KEYS,
         },
     }
-    client = anthropic.Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5"),
-        max_tokens=8000,
-        system=GUIDELINE_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": message}],
-        tools=[tool],
-        tool_choice={"type": "tool", "name": "submit_guideline"},
-    )
-    for block in response.content:
-        if block.type == "tool_use" and block.name == "submit_guideline":
-            return {k: str(block.input.get(k) or "").strip() for k in SECTION_KEYS}
-    raise RuntimeError("Claude did not submit a guideline.")
+    data = llm_client.structured_call(GUIDELINE_SYSTEM_PROMPT, [{"role": "user", "content": message}], tool["name"],
+                                      tool["description"], tool["input_schema"], max_tokens=8000)
+    return {k: str(data.get(k) or "").strip() for k in SECTION_KEYS}
 
 
 def generate_guideline(brief: Dict[str, Any]) -> Dict[str, Any]:
     """Draft a guideline for a brief (the brief's stored JSON). Returns the record stored in guideline_json."""
     facts = build_facts(brief)
-    method, sections = "anthropic_claude", None
+    method, sections = llm_client.method_name(), None
     try:
-        sections = _claude_sections(brief, facts)
+        sections = _llm_sections(brief, facts)
     except Exception as e:
         print(f"[NOTE: Live API Error] Guideline drafting failed: {type(e).__name__}: {e}")
-        method = "anthropic_claude_error_fallback"
+        method = f"{method}_error_fallback"
     if sections is None:
-        if method == "anthropic_claude":
+        if method is None:
             method = "offline_deterministic_fallback"
         sections = _fallback_sections(brief, facts)
     fallback = None
