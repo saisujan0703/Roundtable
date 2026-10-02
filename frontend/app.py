@@ -13,6 +13,7 @@ Features:
 from __future__ import annotations
 
 import html
+import re
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -1207,6 +1208,23 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                     f"🌐 All Sources ({len(cat_all)})",
                 ])
 
+                def _web_text(text: Any, limit: Optional[int] = None) -> str:
+                    """Web content made safe for an HTML block: Markdown headings/bullets stripped, HTML escaped,
+                    line breaks as <br> (a blank line would end the HTML block and break the layout)."""
+                    lines = [re.sub(r"^\s*(#{1,6}\s+|[-*•]\s+)", "", ln).strip() for ln in str(text or "").splitlines()]
+                    flat = "\n".join(ln for ln in lines if ln)
+                    if limit and len(flat) > limit:
+                        flat = flat[:limit - 3].rstrip() + "..."
+                    return html.escape(flat).replace("\n", "<br>")
+
+                def _safe_url(url: Any) -> str:
+                    url = str(url or "").strip()
+                    return html.escape(url, quote=True) if url.lower().startswith(("http://", "https://")) else ""
+
+                def _html(block: str) -> None:
+                    """Render an HTML snippet with indentation and blank lines removed, so Markdown can't reinterpret it."""
+                    st.markdown(" ".join(ln.strip() for ln in block.splitlines() if ln.strip()), unsafe_allow_html=True)
+
                 # Helper to render the interactive split view: Left list, Right document reader
                 def _render_category_split_view(items: List[Dict[str, Any]], category_label: str, tab_key: str):
                     if not items:
@@ -1227,15 +1245,13 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                         st.markdown(f"<div style='font-size: 0.85rem; font-weight: 700; color: #64748B; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.04em;'>📁 Discovered Sources ({len(items)})</div>", unsafe_allow_html=True)
                         
                         for i, it in enumerate(items):
-                            s_name = it.get("source_name", "Web Source")
-                            p_title = it.get("product_or_initiative_name", "Initiative")
-                            summary_short = it.get("summary", "")
-                            if len(summary_short) > 130:
-                                summary_short = summary_short[:127] + "..."
+                            s_name = _web_text(it.get("source_name", "Web Source"))
+                            p_title = _web_text(it.get("product_or_initiative_name", "Initiative"))
+                            summary_short = _web_text(it.get("summary", ""), limit=130)
                             is_active = (i == current_idx)
                             active_border = "border: 2px solid #0073C6; background: #F4F9FD;" if is_active else "border: 1px solid #E2E8F0; background: #FFFFFF;"
                             
-                            st.markdown(f"""
+                            _html(f"""
                             <div style="{active_border} border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; box-shadow: 0 2px 6px rgba(27,42,74,0.03);">
                                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                                     <span style="font-size: 0.76rem; font-weight: 700; color: #0073C6; text-transform: uppercase;">🏢 {s_name}</span>
@@ -1248,7 +1264,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                                     {summary_short}
                                 </div>
                             </div>
-                            """, unsafe_allow_html=True)
+                            """)
 
                             btn_label = "📖 Currently Viewing" if is_active else f"📖 Open & Inspect #{i+1}"
                             if st.button(btn_label, key=f"btn_open_{tab_key}_{brief['id']}_{i}", use_container_width=True, type=("primary" if is_active else "secondary")):
@@ -1259,12 +1275,15 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                     with col_right:
                         st.markdown("<div style='font-size: 0.85rem; font-weight: 700; color: #64748B; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.04em;'>🔍 Document Deep Inspector & APD Impact</div>", unsafe_allow_html=True)
                         
-                        doc_source = selected_item.get("source_name", "Unknown Source")
-                        doc_title = selected_item.get("product_or_initiative_name", "Market Discovery")
-                        doc_summary = selected_item.get("summary", "")
-                        doc_url = selected_item.get("url", "")
-                        doc_type = selected_item.get("source_type", "market_intelligence").replace("_", " ").title()
-                        doc_date = selected_item.get("date_retrieved", "")[:10] or "2026-09-29"
+                        raw_source = selected_item.get("source_name", "Unknown Source")
+                        raw_title = selected_item.get("product_or_initiative_name", "Market Discovery")
+                        raw_url = str(selected_item.get("url", "") or "")
+                        doc_source = _web_text(raw_source)
+                        doc_title = _web_text(raw_title)
+                        doc_summary = _web_text(selected_item.get("summary", ""))
+                        doc_url = _safe_url(raw_url)
+                        doc_type = html.escape(str(selected_item.get("source_type", "market_intelligence")).replace("_", " ").title())
+                        doc_date = html.escape(str(selected_item.get("date_retrieved", ""))[:10]) or "2026-09-29"
                         is_ins_rel = selected_item.get("is_insurance_related", True)
 
                         pill_class = "pill-articles"
@@ -1274,7 +1293,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                         elif "paper" in cat_str or "study" in cat_str: pill_class = "pill-research"
                         elif "competitor" in cat_str: pill_class = "pill-competitor"
 
-                        st.markdown(f"""
+                        _html(f"""
                         <div class="research-inspector-panel">
                             <div class="research-inspector-header">
                                 <div>
@@ -1296,10 +1315,10 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                                 {doc_summary}
                             </div>
                         </div>
-                        """, unsafe_allow_html=True)
+                        """)
 
                         # APD Impact & Guidance Box
-                        st.markdown(f"""
+                        _html(f"""
                         <div class="apd-impact-box">
                             <h5>🛡️ Underwriting & Guidewire APD Actionability</h5>
                             <ul style="margin: 0; padding-left: 18px; color: #4A5568; line-height: 1.5; font-size: 0.84rem;">
@@ -1308,11 +1327,11 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                                 <li><strong>Underwriting Appetite:</strong> Review eligibility boundary thresholds for this product segment.</li>
                             </ul>
                         </div>
-                        """, unsafe_allow_html=True)
+                        """)
 
                         # Direct Launch & Verified URL action
                         if doc_url:
-                            st.markdown(f"""
+                            _html(f"""
                             <div style="display: flex; gap: 10px; align-items: center; margin-top: 12px;">
                                 <a href="{doc_url}" target="_blank" style="display: inline-flex; align-items: center; gap: 6px; background: #0073C6; color: white; padding: 8px 18px; border-radius: 6px; text-decoration: none; font-size: 0.84rem; font-weight: 600; box-shadow: 0 2px 6px rgba(0,115,198,0.25);">
                                     🔗 Open Live Source Webpage ↗
@@ -1321,11 +1340,11 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                                     {doc_url}
                                 </span>
                             </div>
-                            """, unsafe_allow_html=True)
+                            """)
 
                         st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
                         with st.expander("Copy Standard Citation String", expanded=False):
-                            cite_str = f"[{doc_source}] \"{doc_title}\". Retrieved from {doc_url} on {doc_date}. Validated for Guidewire APD decision brief #{brief['id']}."
+                            cite_str = f"[{raw_source}] \"{raw_title}\". Retrieved from {raw_url} on {doc_date}. Validated for Guidewire APD decision brief #{brief['id']}."
                             st.code(cite_str, language="markdown")
 
                 # Render each sub-tab
