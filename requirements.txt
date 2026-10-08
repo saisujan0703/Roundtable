@@ -10,6 +10,8 @@ anthropic>=0.18.0
 # Free alternative LLM (Gemini): set GEMINI_API_KEY and LLM_PROVIDER=gemini
 google-genai>=1.0.0
 tavily-python>=0.5.0
+# Reading uploaded policy forms (PDF); DOCX and text need nothing extra
+pypdf>=4.0.0
 # Local speech-to-text for the idea assistant's voice input (model downloads on first use)
 faster-whisper>=1.0.0
 # Optional: vector store for rag.py (keyword search fallback is used without it)

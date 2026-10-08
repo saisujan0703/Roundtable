@@ -276,7 +276,7 @@ def _cards_html(s: Dict[str, Any]) -> str:
         f'<div class="row"><div><div class="val">{money_short(s["incurred"])}</div><div class="lbl">Total incurred</div></div>'
         '<span class="rt-chip indigo">ClaimCenter</span></div>'
         f'<div class="row"><div><div class="val">{s["n_claims"]:,}</div><div class="lbl">Claims analyzed</div></div>'
-        '<span class="rt-chip up">SQL verified</span></div></div>'
+        '<span class="rt-chip warn">Synthetic demo data</span></div></div>'
         '<div class="rt-card c2"><div class="row" style="border:0;padding:0;margin:0">'
         '<div class="lbl">Top loss causes</div><span class="rt-chip indigo">share</span></div>'
         f'<div class="rt-bars">{bars}</div></div>'
@@ -289,7 +289,7 @@ def _cards_html(s: Dict[str, Any]) -> str:
 
 FEATURES = [
     (ICON_SEARCH, "Claims Review", "Frequency, severity, loss causes and recurring coverage gaps from internal claims history.",
-     [("ClaimCenter data", "i"), ("Verified", "g")], [("Loss causes", ""), ("SQL synced", "")]),
+     [("ClaimCenter-shaped data", "i"), ("Synthetic demo", "")], [("Loss causes", ""), ("SQL computed", "")]),
     (ICON_CHART, "Actuarial Review", "Pure-SQL loss trends, baseline financial ranges and directional portfolio exposure.",
      [("Loss trends", "i"), ("Directional range", "")], [("Earned exposure", ""), ("Severity", "")]),
     (ICON_SHIELD, "Underwriting Review", "Risk eligibility, guideline boundaries and customer segment exposure thresholds.",

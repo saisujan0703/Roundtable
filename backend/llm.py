@@ -12,6 +12,8 @@ Architecture Principles Enforced:
 - If no evidence supports a claim, output 'Insufficient evidence' with empty citations.
 - Financial figures MUST have label 'Directional estimate — not actuarial'.
 - Every brief requires human sign-off before APD mapping.
+- Model-written text is checked deterministically afterwards (backend.verification): one retry with the
+  issues listed, then failing parts are replaced with the computed text or removed.
 """
 from __future__ import annotations
 
@@ -27,7 +29,7 @@ try:
 except ImportError:
     pass
 
-from backend import llm_client
+from backend import llm_client, verification
 from backend.analytics import build_claims_analytics, get_line_baseline, list_tags
 from backend.models import (
     BriefEvidence,
@@ -1029,12 +1031,14 @@ def generate_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Opti
 
     # 2. Brief synthesis by the configured LLM (backend.llm_client: Claude or Gemini); none -> deterministic
     method = llm_client.method_name()
+    computed = _deterministic_synthesis(title, resolved_tag, confidence, payload)
     if method is None:
-        brief = _deterministic_synthesis(title, resolved_tag, confidence, payload)
+        brief = computed
         brief.external_market_evidence = ext_ev
         brief.external_market_status = ext_status
         brief.external_market_error_message = ext_err
         brief.idea_context = idea_context
+        brief.verification = _computed_verification(brief)
         return brief
 
     try:
@@ -1059,7 +1063,7 @@ def generate_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Opti
         # Fields filled server-side (research, analytics, basis, PM context) are not part of the model's output
         if "properties" in claude_brief_schema:
             for field in ("external_market_evidence", "external_market_status", "external_market_error_message", "claims_kpis",
-                          "claims_analytics", "analysis_basis", "proxy_tags", "idea_context"):
+                          "claims_analytics", "analysis_basis", "proxy_tags", "idea_context", "verification"):
                 claude_brief_schema["properties"].pop(field, None)
         if "required" in claude_brief_schema:
             claude_brief_schema["required"] = [
@@ -1067,11 +1071,13 @@ def generate_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Opti
                 if r not in ("external_market_evidence", "external_market_status", "external_market_error_message")
             ]
 
-        submitted = llm_client.structured_call(
-            SYSTEM_PROMPT, [{"role": "user", "content": user_message}], "submit_product_brief",
-            "Submit the completed, cited Product Decision Brief.", claude_brief_schema, max_tokens=12000)
+        def _ask(messages):
+            return llm_client.structured_call(
+                SYSTEM_PROMPT, messages, "submit_product_brief",
+                "Submit the completed, cited Product Decision Brief.", claude_brief_schema, max_tokens=12000)
 
-        if submitted:
+        def _finish(submitted: Dict[str, Any]) -> Tuple[ProductBrief, List[str]]:
+            submitted, dropped = verification.drop_uncited(dict(submitted), computed.model_dump())
             brief = ProductBrief.model_validate(submitted)
             brief.generation_method = method
             brief.match_confidence = confidence
@@ -1091,9 +1097,18 @@ def generate_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Opti
             brief.external_market_status = ext_status
             brief.external_market_error_message = ext_err
             brief.idea_context = idea_context
-            return brief
+            return brief, dropped
 
-        raise RuntimeError("The model did not submit a product brief.")
+        messages = [{"role": "user", "content": user_message}]
+        submitted = _ask(messages)
+        if not submitted:
+            raise RuntimeError("The model did not submit a product brief.")
+        brief, actions = _finish(submitted)
+        brief = _verify_and_fix(brief, actions, computed, payload, ext_ev,
+                                retry=lambda issues: _finish(_ask(messages + [
+                                    {"role": "assistant", "content": json.dumps(submitted)},
+                                    {"role": "user", "content": verification.feedback(issues)}])))
+        return brief
 
     except Exception as e:
         print(f"[NOTE: Live API Error] Brief synthesis failed: {type(e).__name__}: {e}")
@@ -1103,7 +1118,58 @@ def generate_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Opti
         error_brief.external_market_status = ext_status
         error_brief.external_market_error_message = ext_err
         error_brief.idea_context = idea_context
+        error_brief.verification = _computed_verification(error_brief, f"The AI brief failed ({type(e).__name__}); "
+                                                                        "this is the computed brief instead.")
         return error_brief
+
+
+def _computed_verification(brief: ProductBrief, note: Optional[str] = None) -> Dict[str, Any]:
+    """Python-written briefs contain no model text to check: every figure is computed."""
+    rep = verification.report([], verification.brief_checked_counts(brief.model_dump()),
+                              [note] if note else [], brief.generation_method)
+    rep["status"] = "computed"
+    return rep
+
+
+def _verify_and_fix(brief: ProductBrief, actions: List[str], computed: ProductBrief, payload: Dict[str, Any],
+                    ext_ev: List[ExternalMarketEvidence], retry) -> ProductBrief:
+    """Check the model's brief; on errors retry once with the issues listed, keep the better attempt, then
+    replace or remove whatever still fails. Attaches the verification report."""
+    computed_dump = computed.model_dump()
+    computed_text = [t for _, t, _ in verification.brief_texts(computed_dump)]
+    ext_urls = [e.url for e in ext_ev]
+
+    def _check(b: ProductBrief) -> List[Dict[str, str]]:
+        return verification.verify_brief(b.model_dump(), payload.get("claims_analytics"),
+                                         payload.get("retrieved_evidence") or [], ext_urls, computed_text)
+
+    def _errors(issues):
+        return sum(1 for i in issues if i["severity"] == verification.ERROR)
+
+    issues = _check(brief)
+    if _errors(issues):
+        try:
+            retried, retry_dropped = retry(issues)
+            retry_issues = _check(retried)
+            note = f"Retried once after {_errors(issues)} issue(s); the retry had {_errors(retry_issues)}."
+            if _errors(retry_issues) < _errors(issues):
+                brief, issues = retried, retry_issues
+                actions = [note + " Kept the retry."] + retry_dropped
+            else:
+                actions.append(note + " Kept the first attempt.")
+        except Exception as e:
+            actions.append(f"The retry failed ({type(e).__name__}); kept the first attempt.")
+    if _errors(issues):
+        fixed, fixes = verification.remediate_brief(brief.model_dump(), computed_dump, issues)
+        try:
+            brief = ProductBrief.model_validate(fixed)
+            actions += fixes
+            issues = _check(brief)
+        except Exception as e:
+            actions.append(f"Could not apply fixes ({type(e).__name__}); issues are flagged for the reviewer.")
+    brief.verification = verification.report(issues, verification.brief_checked_counts(brief.model_dump()),
+                                             actions, brief.generation_method)
+    return brief
 
 
 

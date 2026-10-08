@@ -1,66 +1,58 @@
 [
   {
-    "competitor_name": "Progressive",
-    "product_name": "Snapshot EV Battery Endorsement",
-    "coverage_summary": "PLACEHOLDER - replace with real researched source before demo. Offers specialized high-voltage battery replacement endorsement for personal electric vehicles, covering thermal runaway and sudden capacity loss exceeding 30% within 3 years.",
-    "source_url": "https://www.progressive.com/auto/electric-vehicle-insurance/",
-    "date_collected": "2026-09-01",
+    "competitor_name": "Plymouth Rock Assurance",
+    "product_name": "Auto insurance — battery replacement position",
+    "coverage_summary": "Car insurance does not cover battery replacement for normal wear and tear, because batteries are treated as consumable items. Collision or comprehensive coverage may pay for battery damage or theft from a covered loss such as an accident. Manufacturer warranties cover battery defects but exclude accident damage, which insurance handles instead. This is the market's standard EV battery gap: degradation and defects sit outside auto coverage.",
+    "source_url": "https://www.plymouthrock.com/resources/does-car-insurance-cover-a-battery-replacement",
+    "date_collected": "2026-10-03",
     "source_type": "competitor"
   },
   {
-    "competitor_name": "GEICO",
-    "product_name": "EV Battery Degradation & Thermal Protection Rider",
-    "coverage_summary": "PLACEHOLDER - replace with real researched source before demo. Optional rider covering battery cell failure, fire damage from charging malfunctions, and OEM battery replacement minus standard comprehensive deductible.",
-    "source_url": "https://www.geico.com/auto-insurance/electric-cars/",
-    "date_collected": "2026-09-05",
+    "competitor_name": "Tesla (as reported by Insurance.com)",
+    "product_name": "Tesla high-voltage battery — insurance vs warranty",
+    "coverage_summary": "Collision pays for EV battery damage from an accident and comprehensive pays for fire, flood, theft and other named perils, treating the battery like an engine in a conventional car. Gradual loss of battery capacity is not covered by insurance. Tesla's battery warranty runs 8 years if capacity drops to 70% or below, with mileage limits of 100,000 to 150,000 miles by model, and excludes collision damage and negligence.",
+    "source_url": "https://www.insurance.com/auto-insurance/tesla-insurance/tesla-battery-replacement-cost/",
+    "date_collected": "2026-10-03",
+    "source_type": "competitor"
+  },
+  {
+    "competitor_name": "Amica Mutual",
+    "product_name": "Water backup coverage endorsement (homeowners)",
+    "coverage_summary": "Water backup is not in the standard homeowners policy but can be added as an optional endorsement covering direct physical damage when water backs up through sewers or drains or overflows from a sump pump, including repairs, damaged personal property and cleanup. Amica states that water backup and flood insurance address different causes of loss, so the endorsement does not cover flood.",
+    "source_url": "https://www.amica.com/en/resources/home/coverage/water-backup-coverage.html",
+    "date_collected": "2026-10-03",
+    "source_type": "competitor"
+  },
+  {
+    "competitor_name": "Amica Mutual",
+    "product_name": "Solar panels under home insurance",
+    "coverage_summary": "Roof-mounted solar panels and solar shingles are covered by standard home insurance; ground-mounted systems may fall under other structures coverage. Coverage is for sudden physical damage such as wind, hail and theft, and excludes mechanical breakdown, wear and tear and poor installation. Homeowners should raise dwelling limits for the system's added value.",
+    "source_url": "https://www.amica.com/en/resources/home/coverage/solar-panels.html",
+    "date_collected": "2026-10-03",
     "source_type": "competitor"
   },
   {
     "competitor_name": "State Farm",
-    "product_name": "Clean Energy Drive Battery Replacement Option",
-    "coverage_summary": "PLACEHOLDER - replace with real researched source before demo. Extends standard collision and comprehensive coverage to specifically include OEM battery pack replacement and dedicated roadside charging towing.",
-    "source_url": "https://www.statefarm.com/insurance/auto/green-vehicles",
-    "date_collected": "2026-09-10",
+    "product_name": "Personal Articles Policy (scheduled valuables)",
+    "coverage_summary": "Scheduled coverage for specific valuables such as jewelry, electronics, collectibles and musical instruments against theft and accidental damage, with no deductible and worldwide protection. Unlike homeowners policies, which impose special dollar limits on these categories for theft, each item has its own specified limit.",
+    "source_url": "https://www.statefarm.com/insurance/personal-articles-policy",
+    "date_collected": "2026-10-03",
     "source_type": "competitor"
   },
   {
-    "competitor_name": "Allstate",
-    "product_name": "Milewise EV High-Voltage Battery Protection",
-    "coverage_summary": "PLACEHOLDER - replace with real researched source before demo. Pay-per-mile EV product bundling high-voltage battery degradation warranty wrap-around and emergency disconnect coverage.",
-    "source_url": "https://www.allstate.com/auto-insurance/electric-hybrid",
-    "date_collected": "2026-09-12",
+    "competitor_name": "SkyWatch",
+    "product_name": "Commercial drone insurance (liability and hull)",
+    "coverage_summary": "Third-party liability for bodily injury and property damage, plus hull coverage for the drone and equipment, sold hourly through a mobile app, monthly or annually, with clients named as additional insureds at no extra fee. Aimed at Part 107 commercial pilots in construction, mapping, agriculture and public safety, with fleet insurance for operators of multiple drones.",
+    "source_url": "https://www.skywatch.ai/drone-insurance",
+    "date_collected": "2026-10-03",
     "source_type": "competitor"
   },
   {
-    "competitor_name": "Travelers",
-    "product_name": "Premier EV Battery Protection Endorsement",
-    "coverage_summary": "PLACEHOLDER - replace with real researched source before demo. Commercial and personal auto endorsement covering battery pack structural casing damage, electrical surge during supercharging, and recycling logistics.",
-    "source_url": "https://www.travelers.com/car-insurance/electric-vehicle-insurance",
-    "date_collected": "2026-09-15",
-    "source_type": "competitor"
-  },
-  {
-    "competitor_name": "Liberty Mutual",
-    "product_name": "EV Battery Degradation & Accidental Damage Add-On",
-    "coverage_summary": "PLACEHOLDER - replace with real researched source before demo. Standalone add-on for new EV policies providing zero-depreciation battery replacement following accidental undercarriage impact or water ingress.",
-    "source_url": "https://www.libertymutual.com/auto-insurance/ev-battery",
-    "date_collected": "2026-09-18",
-    "source_type": "competitor"
-  },
-  {
-    "competitor_name": "Nationwide",
-    "product_name": "High-Voltage Battery & Charging Cable Coverage Package",
-    "coverage_summary": "PLACEHOLDER - replace with real researched source before demo. Bundled coverage including wall-box home chargers, portable fast-charging cables, and catastrophic battery short-circuit damage.",
-    "source_url": "https://www.nationwide.com/personal/insurance/auto/green-car",
-    "date_collected": "2026-09-20",
-    "source_type": "competitor"
-  },
-  {
-    "competitor_name": "Lemonade",
-    "product_name": "Lemonade Car EV Battery Wear & Tear Protection Rider",
-    "coverage_summary": "PLACEHOLDER - replace with real researched source before demo. App-based micromobility and EV battery rider providing fixed payouts for battery health dropping below 70% state-of-health threshold.",
-    "source_url": "https://www.lemonade.com/car/ev-insurance",
-    "date_collected": "2026-09-22",
+    "competitor_name": "Global Aerospace",
+    "product_name": "Drone and fleet drone insurance",
+    "coverage_summary": "Third-party liability for bodily injury and property damage, hull damage cover for the aircraft, and payload coverage for sensors and equipment that may be worth more than the drone. Fleet drone insurance for enterprises gives blanket liability with automatic cover for new drones added to the fleet under one policy.",
+    "source_url": "https://www.global-aero.com/drone-insurance-guide/",
+    "date_collected": "2026-10-03",
     "source_type": "competitor"
   }
 ]

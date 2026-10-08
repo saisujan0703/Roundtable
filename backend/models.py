@@ -183,7 +183,7 @@ class ProductBrief(BaseModel):
     )
     internal_evidence: List[BriefEvidence] = Field(
         default_factory=list,
-        description="Evidence derived from verified internal claims/policies database."
+        description="Evidence derived from the internal claims/policies database (synthetic demo data in this prototype)."
     )
     competitor_comparison: List[BriefEvidence] = Field(
         default_factory=list,
@@ -225,6 +225,11 @@ class ProductBrief(BaseModel):
         default="anthropic_claude",
         description="Generation engine used: 'anthropic_claude', 'google_gemini', '<provider>_error_fallback' "
                     "or 'offline_deterministic_fallback'"
+    )
+    verification: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Deterministic post-generation check of the model-written text (backend.verification); "
+                    "filled server-side, never by the model."
     )
     human_approval_required: bool = Field(
         default=True,

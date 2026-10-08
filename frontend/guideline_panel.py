@@ -13,6 +13,8 @@ from typing import Any, Callable, Dict, Optional
 
 import streamlit as st
 
+from verification_badge import chip_html, render_verification
+
 METHOD_LABEL = {
     "anthropic_claude": "Drafted by Claude",
     "anthropic_claude_error_fallback": "Rule-based draft (Claude call failed)",
@@ -62,9 +64,11 @@ def render_guideline(brief: Dict[str, Any], data: Optional[Dict[str, Any]],
         f'<span class="status-badge {"status-approved" if approved else "status-pending"}">'
         f'{"APPROVED" if approved else "DRAFT"}</span>&nbsp; '
         f'<span class="rt-chip grey">{METHOD_LABEL.get(g.get("generation_method"), g.get("generation_method"))}</span>'
+        f'&nbsp;{chip_html(g.get("verification"))}'
         + (f'&nbsp;<span class="rt-chip indigo">{len(edited)} section(s) edited</span>' if edited else ""),
         unsafe_allow_html=True,
     )
+    render_verification(g.get("verification"), "guideline")
     c2.download_button("⬇️ Download (.md)", data=data.get("markdown") or "", key=f"gl_dl_{bid}",
                        file_name=f"claims-handling-guideline-{_slug(brief['title'])}.md", mime="text/markdown",
                        use_container_width=True)
@@ -76,8 +80,8 @@ def render_guideline(brief: Dict[str, Any], data: Optional[Dict[str, Any]],
                 st.rerun()
 
     if g.get("stale"):
-        st.warning("The brief's claims analysis was re-run after this guideline was drafted, so its figures may be out "
-                   "of date. Redraft it before approving.")
+        st.warning("The brief's claims analysis or its policy wording changed after this guideline was drafted, so its "
+                   "figures or quoted clauses may be out of date. Redraft it before approving.")
     if g.get("basis") == "proxy":
         st.info("This product has no claims of its own: figures in the guideline are **proxy data** from related risk patterns.")
     if approved:

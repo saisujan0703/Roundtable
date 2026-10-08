@@ -48,7 +48,7 @@ def render_scenarios(brief: Dict[str, Any], data: Optional[Dict[str, Any]], gene
     st.markdown("### ClaimCenter Test Scenarios")
     st.caption("Test claims to run through ClaimCenter before go-live, built from this brief's handling guideline: "
                "every decision-tree branch, plus SIU, large-loss and recovery cases, with the result the guideline "
-               "requires. Claim amounts are real figures from the claims data.")
+               "requires. Claim amounts are figures from the (synthetic demo) claims data.")
     if data is None:
         st.error("Could not load the test scenarios from the backend.")
         return

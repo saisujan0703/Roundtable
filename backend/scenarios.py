@@ -31,7 +31,12 @@ CATEGORIES = {
     "fraud": "SIU red flag",
     "large_loss": "Large loss",
     "recovery": "Subrogation / salvage",
+    "policy_verification": "Policy verification (PC → CC)",
+    "state_deadline": "State deadline",
 }
+# Built by Roundtable itself (not from the guideline), so the model never writes them
+SYSTEM_CATEGORIES = ("policy_verification", "state_deadline")
+MAX_STATE_SCENARIOS = 2
 DECISIONS = ("COVERED", "NOT COVERED", "REFER", "PENDING")
 AMOUNT_LABELS = ("typical", "median", "p90", "largest")
 MAX_SCENARIOS = 14
@@ -147,7 +152,7 @@ def _llm(brief: Dict[str, Any], facts: Dict[str, Any], guideline_md: str) -> Opt
     item = {
         "type": "object",
         "properties": {
-            "category": {"type": "string", "enum": list(CATEGORIES)},
+            "category": {"type": "string", "enum": [c for c in CATEGORIES if c not in SYSTEM_CATEGORIES]},
             "title": {"type": "string"},
             "setup": {"type": "string", "description": "Policy state before the claim."},
             "loss_description": {"type": "string"},
@@ -176,7 +181,8 @@ def _llm(brief: Dict[str, Any], facts: Dict[str, Any], guideline_md: str) -> Opt
     data = llm_client.structured_call(SCENARIO_SYSTEM_PROMPT, [{"role": "user", "content": message}], tool["name"],
                                       tool["description"], tool["input_schema"], max_tokens=8000)
     out = []
-    valid = [s for s in data.get("scenarios") or [] if s.get("category") in CATEGORIES]
+    valid = [s for s in data.get("scenarios") or [] if s.get("category") in CATEGORIES
+             and s.get("category") not in SYSTEM_CATEGORIES]
     for n, s in enumerate(valid, start=1):
         out.append(_scenario(
             f"S{n:02d}", s["category"], str(s.get("title") or CATEGORIES[s["category"]]), str(s.get("setup") or ""),
@@ -192,8 +198,76 @@ def _llm(brief: Dict[str, Any], facts: Dict[str, Any], guideline_md: str) -> Opt
     return out or None
 
 
-def generate_scenarios(brief: Dict[str, Any], guideline: Dict[str, Any], guideline_md: str) -> Dict[str, Any]:
-    """Build the test scenarios for a brief from its handling guideline. Returns the record stored in scenarios_json."""
+def _days(n: Optional[int], kind: Optional[str]) -> str:
+    return f"{n} {kind} days" if n else "[TBD — Compliance]"
+
+
+def _system_scenarios(facts: Dict[str, Any], compliance: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Integration and state-deadline tests every launch needs, whatever the guideline says."""
+    groups = (facts.get("handling") or {}).get("assigned_groups_today") or []
+    route = "handling group per guideline section 6" + (f" (today: {groups[0]})" if groups else "")
+    out = [
+        _scenario("", "policy_verification", "New coverage appears on the verified policy",
+                  "Bind a test policy in PolicyCenter with the new coverage, a non-default limit and deductible.",
+                  {"loss_description": "Any covered loss under the new coverage", "days_after_policy_inception": 30,
+                   "reported_days_after_loss": 1, "amount_label": "typical"},
+                  ["Create the FNOL in ClaimCenter and search for the policy.",
+                   "Open the verified policy's coverages.",
+                   "Add an exposure under the new coverage and check the limit and deductible on it."],
+                  {"coverage": "Coverage listed on the verified policy with the PolicyCenter limit and deductible",
+                   "reserve": "Reserve line opens under the new coverage type", "routing": route, "siu": "No referral",
+                   "letter": "Acknowledgement"}, ["coverage_summary", "fnol"]),
+        _scenario("", "policy_verification", "Mid-term endorsement adds the coverage",
+                  "Policy bound without the coverage; a mid-term change adds it with a future effective date.",
+                  {"loss_description": "Loss dated one day BEFORE the endorsement's effective date",
+                   "days_after_policy_inception": 120, "reported_days_after_loss": 1, "amount_label": "typical"},
+                  ["Create the FNOL with the loss date before the endorsement takes effect.",
+                   "Retrieve the policy as of the loss date.",
+                   "Try to add an exposure under the new coverage.",
+                   "Repeat with a loss date after the effective date."],
+                  {"coverage": "NOT COVERED before the effective date (coverage absent from the policy as of loss date); "
+                               "available after it",
+                   "reserve": "No reserve under the new coverage for the earlier loss", "routing": route,
+                   "siu": "Check: coverage added shortly before a loss is an SIU red flag (section 7)",
+                   "letter": "Denial — coverage not purchased (earlier loss)"}, ["decision_tree", "siu"]),
+    ]
+    launch = sorted([r for r in (compliance or {}).get("states") or [] if r["launch"]],
+                    key=lambda r: -(r["exposure_share_pct"] or 0))[:MAX_STATE_SCENARIOS]
+    for r in launch:
+        rule = r["citation"] + ("" if r["status"] == "Confirmed" else " — not yet confirmed by Compliance")
+        out.append(_scenario(
+            "", "state_deadline", f"{r['state']} claim-handling deadlines",
+            f"Policy with the new coverage, insured and loss location in {r['state']}.",
+            {"loss_description": f"Covered loss in {r['state']}", "days_after_policy_inception": 365,
+             "reported_days_after_loss": 1, "amount_label": "typical"},
+            ["Create the FNOL and check the activities / diaries ClaimCenter creates.",
+             "Leave the acknowledgement task open and advance the test clock to its due date.",
+             "Record proof of loss and check the decision diary.",
+             "Approve the claim and check the payment diary."],
+            {"coverage": "COVERED", "reserve": "Default initial reserve per guideline section 5", "routing": route,
+             "siu": "No referral",
+             "letter": (f"Acknowledgement due within {_days(r['acknowledge_days'], r['acknowledge_day_type'])}; decision "
+                        f"within {_days(r['decision_days'], r['decision_day_type'])} "
+                        f"{r.get('decision_trigger') or ''}; payment within "
+                        f"{_days(r['payment_days'], r['payment_day_type'])}; escalation when a diary is "
+                        f"overdue ({rule}; see the matrix's extension rule for what starts each clock)")},
+            ["communication"]))
+    if not launch:
+        out.append(_scenario(
+            "", "state_deadline", "State claim-handling deadlines", "Open the compliance matrix (Launch operations "
+            "tab) first; this scenario then names the largest launch states.",
+            {"loss_description": "Covered loss in a launch state", "days_after_policy_inception": 365,
+             "reported_days_after_loss": 1, "amount_label": "typical"},
+            ["Create the FNOL and check the acknowledgement, decision and payment diaries."],
+            {"coverage": "COVERED", "reserve": "Default initial reserve", "routing": route, "siu": "No referral",
+             "letter": "Diaries match the state's deadlines [TBD — Compliance]"}, ["communication"]))
+    return out
+
+
+def generate_scenarios(brief: Dict[str, Any], guideline: Dict[str, Any], guideline_md: str,
+                       compliance: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build the test scenarios for a brief from its handling guideline, plus the policy-verification and
+    state-deadline tests (from the state compliance matrix). Returns the record stored in scenarios_json."""
     facts = build_facts(brief)
     method, scenarios = llm_client.method_name(), None
     try:
@@ -205,12 +279,14 @@ def generate_scenarios(brief: Dict[str, Any], guideline: Dict[str, Any], guideli
         if method is None:
             method = "offline_deterministic_fallback"
         scenarios = _fallback(brief, facts)
+    scenarios = scenarios[:MAX_SCENARIOS] + _system_scenarios(facts, compliance)
     amounts = _amounts(facts)
-    for s in scenarios[:MAX_SCENARIOS]:
+    for n, s in enumerate(scenarios, start=1):
+        s["id"] = f"S{n:02d}"
         # Dollar figures are filled here from the claims analytics, never by the model
         s["fnol"]["claimed_amount"] = amounts.get(s["fnol"]["amount_label"]) or "[TBD — no claims data; tester picks a value]"
     return {"generation_method": method, "generated_at": datetime.utcnow().isoformat(), "basis": facts["basis"],
-            "guideline_version": guideline_version(guideline), "scenarios": scenarios[:MAX_SCENARIOS]}
+            "guideline_version": guideline_version(guideline), "scenarios": scenarios}
 
 
 def update_scenario(record: Dict[str, Any], sid: str, status: Optional[str], tester: Optional[str],

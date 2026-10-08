@@ -1,29 +1,101 @@
 [
   {
     "regulatory_body": "NAIC (National Association of Insurance Commissioners)",
-    "regulation_title": "Bulletin 2024-03: Underwriting Guidelines for High-Voltage Battery Hazard Classification",
-    "summary": "PLACEHOLDER - replace with real researched source before demo. Recommends state insurance departments require carriers to provide transparent disclosure of battery exclusion clauses and define standard rating tiers for lithium-ion fire liability.",
-    "source_url": "https://content.naic.org/regulatory-bulletins/2024-03-ev-battery-underwriting",
-    "date_effective": "2024-06-01",
-    "date_collected": "2026-09-01",
+    "regulation_title": "Unfair Property/Casualty Claims Settlement Practices Model Regulation (MDL-902)",
+    "summary": "Model minimum standards for investigating and settling property and casualty claims (not workers' compensation). Acknowledge notice of a claim within 15 days (Section 6A); answer an insurance department inquiry within 21 days (6B); advise a first-party claimant of acceptance or denial within 21 days after proof of loss, and cite the specific policy provision, condition or exclusion in a written denial (7A); if more time is needed, notify within 21 days with reasons and then every 45 days (7B); tender payment within 30 days of affirming liability when the amount is not in dispute (7F). 'Days' means calendar days. States adopt their own versions, so state rules govern.",
+    "source_url": "https://content.naic.org/sites/default/files/model-law-902.pdf",
+    "date_effective": "1997-07-01",
+    "date_collected": "2026-10-03",
+    "source_type": "regulatory"
+  },
+  {
+    "regulatory_body": "NAIC (National Association of Insurance Commissioners)",
+    "regulation_title": "Unfair Claims Settlement Practices Act (MDL-900)",
+    "summary": "Model act defining unfair claims practices when committed flagrantly or as a general business practice (Section 4), including: misrepresenting facts or policy provisions; failing to acknowledge claim communications promptly; failing to adopt reasonable standards for prompt investigation; refusing to pay without a reasonable investigation; failing to affirm or deny coverage within a reasonable time; failing to give a reasonable and accurate explanation for a denial or compromise offer; and failing to provide claim forms within 15 calendar days of a request. It is the basis of most state fair claims handling statutes.",
+    "source_url": "https://content.naic.org/sites/default/files/model-law-900.pdf",
+    "date_effective": "1997-01-01",
+    "date_collected": "2026-10-03",
     "source_type": "regulatory"
   },
   {
     "regulatory_body": "California Department of Insurance (CDI)",
-    "regulation_title": "Notice on Mandatory Battery Replacement Minimum Standards & Salvage Handling",
-    "summary": "PLACEHOLDER - replace with real researched source before demo. Prohibits non-OEM battery replacements in total loss repair determinations unless certified by battery health telemetry; mandates disclosure of battery recycling compliance.",
-    "source_url": "https://www.insurance.ca.gov/0250-insurers/0300-ins-sub-req/ev-battery-mandates.cfm",
-    "date_effective": "2025-01-15",
-    "date_collected": "2026-09-05",
+    "regulation_title": "Fair Claims Settlement Practices Regulations, 10 CCR §2695.5 and §2695.7",
+    "summary": "California claim handling deadlines: acknowledge notice of a claim and begin any necessary investigation within 15 calendar days (§2695.5(e)); accept or deny within 40 calendar days after receiving proof of claim (§2695.7(b)); a denial must tell the claimant they may have the matter reviewed by the California Department of Insurance and give the address and telephone number of the CDI unit that reviews claims practices (§2695.7(b)(3)); if more time is needed, give written notice within 40 days and every 30 calendar days after (§2695.7(c)(1)); pay within 30 calendar days of acceptance (§2695.7(h)). CDI consumer hotline: 1-800-927-4357.",
+    "source_url": "https://www.law.cornell.edu/regulations/california/10-CCR-2695.7",
+    "date_effective": "current",
+    "date_collected": "2026-10-03",
+    "source_type": "regulatory"
+  },
+  {
+    "regulatory_body": "Texas Legislature / Texas Department of Insurance",
+    "regulation_title": "Texas Insurance Code Chapter 542, Subchapter B — Prompt Payment of Claims (§542.055-§542.057)",
+    "summary": "Texas prompt payment rules: within 15 days of notice of a claim, acknowledge it, begin the investigation and request all items needed (30 business days for eligible surplus lines insurers) (§542.055); accept or reject in writing within 15 business days after receiving all requested items, and a rejection must state the reasons (§542.056(a),(c)); if more time is needed, notify the claimant with reasons and decide within 45 days of that notice (§542.056(d)); pay within 5 business days after notifying acceptance (20 business days for surplus lines) (§542.057).",
+    "source_url": "https://texas.public.law/statutes/tex._ins._code_section_542.056",
+    "date_effective": "current",
+    "date_collected": "2026-10-03",
+    "source_type": "regulatory"
+  },
+  {
+    "regulatory_body": "New York Department of Financial Services (DFS)",
+    "regulation_title": "Insurance Regulation 64, 11 NYCRR 216.4 and 216.6 (Unfair Claims Settlement Practices)",
+    "summary": "New York claim handling deadlines, all in business days: acknowledge notice of a claim within 15 business days (216.4); answer a Department inquiry within 10 business days; accept or reject in writing within 15 business days after a properly executed proof of loss (216.6(a)); a rejection must give any policy provision limiting the claimant's right to sue, and a disclaimer must explain the specific reasons (216.6(c)-(d)); if more time is needed, notify within 15 business days and every 90 days after; pay within 5 business days of receiving the settlement agreement (216.6(g)).",
+    "source_url": "https://www.law.cornell.edu/regulations/new-york/11-NYCRR-216.6",
+    "date_effective": "current",
+    "date_collected": "2026-10-03",
+    "source_type": "regulatory"
+  },
+  {
+    "regulatory_body": "Florida Legislature / Office of Insurance Regulation",
+    "regulation_title": "Fla. Stat. §627.70131 — Insurer's duty to acknowledge communications regarding claims; investigation (property insurance)",
+    "summary": "Applies to residential and commercial property insurance claims (water damage, theft, fire, roof and solar panel damage on dwellings). Acknowledge a claim communication within 7 calendar days (1)(a); begin investigation within 7 days after proof-of-loss statements and complete any physical inspection within 30 days (3); pay or deny an initial, reopened or supplemental claim within 60 days of notice unless prevented by factors beyond the insurer's control, with interest on late payments (7)(a); give a reasonable written explanation of the policy basis for any denial or partial denial.",
+    "source_url": "https://codes.findlaw.com/fl/title-xxxvii-insurance/fl-st-sect-627-70131/",
+    "date_effective": "2025-01-01",
+    "date_collected": "2026-10-03",
     "source_type": "regulatory"
   },
   {
     "regulatory_body": "National Highway Traffic Safety Administration (NHTSA) / DOT",
-    "regulation_title": "FMVSS Standard 305a: Electric Vehicle Safety & Battery Fire Post-Crash Integrity",
-    "summary": "PLACEHOLDER - replace with real researched source before demo. Federal mandate establishing post-impact electrical isolation and thermal runaway containment thresholds; requires insurer loss reporting on battery thermal runaway incidents.",
-    "source_url": "https://www.nhtsa.gov/laws-regulations/fmvss-305a-ev-battery-safety",
-    "date_effective": "2025-09-01",
-    "date_collected": "2026-09-10",
+    "regulation_title": "Proposed FMVSS No. 305a, Electric-Powered Vehicles: Electric Powertrain Integrity (RIN 2127-AM43)",
+    "summary": "PROPOSED RULE (notice of proposed rulemaking, April 2024), not yet a final standard as collected: would replace FMVSS No. 305 (electrolyte spillage and electric shock protection) and extend it to heavy vehicles. Adds electric vehicle propulsion battery (REESS) safety requirements: no fire, explosion, rupture or venting under overcharge, over-discharge, over-current, over-temperature or external short circuit; no fire or explosion for one hour after the crash test; and vehicle-specific emergency response information for battery fires and stranded energy. Relevant to EV battery fire and thermal runaway claims, post-crash storage and salvage of damaged EV batteries.",
+    "source_url": "https://www.reginfo.gov/public/do/eAgendaViewRule?pubId=202110&RIN=2127-AM43&operation=OPERATION_PRINT_RULE",
+    "date_effective": "2024-04-25",
+    "date_collected": "2026-10-03",
+    "source_type": "regulatory"
+  },
+  {
+    "regulatory_body": "Federal Aviation Administration (FAA)",
+    "regulation_title": "14 CFR §107.9 — Small unmanned aircraft (drone) safety event reporting",
+    "summary": "Commercial drone operators flying under Part 107 must report to the FAA within 10 calendar days any operation causing serious injury or loss of consciousness, or property damage unless repair costs (materials and labor) do not exceed $500 or the property's fair market value does not exceed $500 if a total loss. For drone fleet liability and hull claims, the FAA report is evidence to request at first notice of loss and a check on the operator's compliance.",
+    "source_url": "https://www.law.cornell.edu/cfr/text/14/107.9",
+    "date_effective": "current",
+    "date_collected": "2026-10-03",
+    "source_type": "regulatory"
+  },
+  {
+    "regulatory_body": "Centers for Medicare & Medicaid Services (CMS)",
+    "regulation_title": "MMSEA Section 111 Mandatory Insurer Reporting for Non-Group Health Plans (NGHP)",
+    "summary": "Liability insurers (including self-insurance), no-fault insurers and workers' compensation plans are responsible reporting entities and must report settlements, judgments, awards or other payments to Medicare beneficiaries, so CMS can determine when other coverage pays before Medicare. Applies to bodily injury, medical payments and workers' compensation claims under a new coverage; reporting is by electronic file or the Section 111 web portal.",
+    "source_url": "https://www.cms.gov/medicare/coordination-benefits-recovery/mandatory-insurer-reporting",
+    "date_effective": "current",
+    "date_collected": "2026-10-03",
+    "source_type": "regulatory"
+  },
+  {
+    "regulatory_body": "National Fire Protection Association (NFPA)",
+    "regulation_title": "NFPA 855, Standard for the Installation of Stationary Energy Storage Systems",
+    "summary": "Installation standard for stationary energy storage systems, including residential lithium-ion home batteries paired with solar panels: installation, location, ventilation, fire detection and suppression, explosion control and thermal runaway hazards, maintenance and decommissioning. The 2023 edition is current, with a 2026 edition in development. For solar and home battery claims, whether the system was installed to the adopted code is a key cause-of-loss and subrogation question.",
+    "source_url": "https://link.nfpa.org/all-publications/855/2023",
+    "date_effective": "2023-01-01",
+    "date_collected": "2026-10-03",
+    "source_type": "regulatory"
+  },
+  {
+    "regulatory_body": "NAIC (National Association of Insurance Commissioners)",
+    "regulation_title": "A Consumer's Guide to Home Insurance",
+    "summary": "NAIC consumer guide to homeowners policies: the special form covers all perils except those named as excluded, and flood and earthquake are commonly excluded. Most policies give limited or no coverage for sewer or drain backup and sump pump overflow, which can be added by endorsement. A scheduled personal property endorsement (personal articles floater) covers jewelry, furs, coins, guns, computers and other valuables above the normal special limits for theft.",
+    "source_url": "https://content.naic.org/sites/default/files/publication-hoi-pp-consumer-homeowners.pdf",
+    "date_effective": "current",
+    "date_collected": "2026-10-03",
     "source_type": "regulatory"
   }
 ]

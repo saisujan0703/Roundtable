@@ -62,7 +62,9 @@ def get_sources_data(sources_dir: Path | str = SOURCES_DIR) -> List[Dict[str, An
                     f"Summary: {item.get('summary')}"
                 )
                 documents.append({
-                    "id": f"reg_{item.get('regulatory_body', '').lower().replace(' ', '_')[:20]}",
+                    # Body plus title: one body (e.g. NAIC) publishes several sources
+                    "id": f"reg_{item.get('regulatory_body', '').lower().replace(' ', '_')[:20]}_"
+                          f"{re.sub(r'[^a-z0-9]+', '_', item.get('regulation_title', '').lower())[:40]}",
                     "text": doc_text,
                     "metadata": {
                         "source_name": item.get("regulatory_body", ""),

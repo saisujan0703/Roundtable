@@ -12,6 +12,8 @@ from typing import Any, Callable, Dict, Optional
 
 import streamlit as st
 
+from verification_badge import chip_html, render_verification
+
 METHOD_LABEL = {
     "anthropic_claude": "Drafted by Claude",
     "anthropic_claude_error_fallback": "Template draft (Claude call failed)",
@@ -23,6 +25,7 @@ SCENARIO_NAMES = {
     "covered": "Covered", "not_purchased": "Not purchased", "excluded": "Excluded", "ambiguous": "Unclear cause",
     "late_notice": "Late notice", "incomplete_proof": "Incomplete proof", "fraud": "SIU red flag",
     "large_loss": "Large loss", "recovery": "Subrogation / salvage",
+    "policy_verification": "Policy verification", "state_deadline": "State deadline",
 }
 
 
@@ -39,8 +42,9 @@ def render_letters(brief: Dict[str, Any], data: Optional[Dict[str, Any]], draft:
     """Render the letters tab. The callables call the backend and return True on success."""
     st.markdown("### Customer Letter Templates")
     st.caption("The letters adjusters send on this coverage, drafted from the handling guideline. Customer details are "
-               "merge fields ClaimCenter fills in when sending; policy clauses and state deadlines are left as [TBD] "
-               "for Legal and Compliance. Each letter is approved on its own.")
+               "merge fields ClaimCenter fills in when sending; state deadlines and the state-required notice come from the "
+               "compliance matrix (Launch operations tab); policy clauses are left as [TBD] for Legal. Each letter is "
+               "approved on its own.")
     if data is None:
         st.error("Could not load the letter templates from the backend.")
         return
@@ -64,8 +68,9 @@ def render_letters(brief: Dict[str, Any], data: Optional[Dict[str, Any]], draft:
     c1, c2, c3 = st.columns(3)
     c1.metric("Letters approved", f"{approved} / {len(letters)}")
     c2.metric("Open [TBD] items", tbds)
-    c3.markdown(f'<br><span class="rt-chip grey">{METHOD_LABEL.get(record.get("generation_method"), "")}</span>',
-                unsafe_allow_html=True)
+    c3.markdown(f'<br><span class="rt-chip grey">{METHOD_LABEL.get(record.get("generation_method"), "")}</span> '
+                f'{chip_html(record.get("verification"))}', unsafe_allow_html=True)
+    render_verification(record.get("verification"), "letters")
     if data["stale"]:
         st.warning("The handling guideline changed after these letters were drafted. Redraft them (or edit each one) "
                    "before approving.")
@@ -92,6 +97,16 @@ def render_letters(brief: Dict[str, Any], data: Optional[Dict[str, Any]], draft:
                         st.rerun()
     with st.expander("ℹ️ Merge fields ClaimCenter fills in"):
         st.markdown("\n".join(f"- `{{{{{k}}}}}` — {v}" for k, v in data["merge_fields"].items()))
+    notices = data.get("state_notices") or []
+    with st.expander(f"🏛️ State merge fields by launch state ({len(notices)})"):
+        if not notices:
+            st.caption("Open the Launch operations tab to build the state compliance matrix.")
+        for n in notices:
+            flag = "✅ confirmed" if n["status"] == "Confirmed" else (
+                "⚠️ NAIC placeholder" if n["placeholder"] else "⚠️ not confirmed")
+            st.markdown(f"**{n['state']}** · {flag} · {_md(n['citation'])}  \n"
+                        f"Acknowledge: {n['acknowledge']} · Decision: {_md(n['decision'])} · Payment: {n['payment']}  \n"
+                        f"`{{{{state_required_notice}}}}` → {_md(n['denial_notice'])}")
 
     st.markdown("---")
     for l in letters:

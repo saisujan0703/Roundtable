@@ -25,10 +25,48 @@ from readiness_panel import render_readiness
 from guideline_panel import render_guideline
 from scenarios_panel import render_scenarios
 from letters_panel import render_letters
+from operations_panel import render_operations
+from launch_gate_panel import render_launch_gate
+from policy_form_panel import render_policy_form
+from coverage_panel import render_covered_claims
+from radar_panel import render_radar
+from verification_badge import chip_html, render_verification
 from home_page import money_short, portfolio_stats, render_home, sculpture_svg
 
 # Backend API Base URL
 API_BASE_URL = "http://127.0.0.1:8000/api"
+
+
+class _AuthedAPI:
+    """`requests` with the signed-in user's bearer token attached. A 401 (expired or revoked session)
+    signs the user out so the next run shows the sign-in screen."""
+
+    @staticmethod
+    def request(method: str, url: str, **kw) -> requests.Response:
+        token = st.session_state.get("auth_token")
+        if token:
+            kw["headers"] = {**(kw.get("headers") or {}), "Authorization": f"Bearer {token}"}
+        r = requests.request(method, url, **kw)
+        if r.status_code == 401 and token:
+            _clear_session()
+            st.session_state.auth_notice = "Your session expired. Please sign in again."
+        return r
+
+    def get(self, url: str, **kw): return self.request("GET", url, **kw)
+    def post(self, url: str, **kw): return self.request("POST", url, **kw)
+    def put(self, url: str, **kw): return self.request("PUT", url, **kw)
+    def delete(self, url: str, **kw): return self.request("DELETE", url, **kw)
+
+
+api = _AuthedAPI()
+
+
+def _clear_session() -> None:
+    st.session_state.is_authenticated = False
+    st.session_state.auth_token = None
+    st.session_state.user_role = None
+    st.session_state.user_email = ""
+    st.session_state.user_name = ""
 
 # Known risk tags in the synthetic Guidewire database
 KNOWN_TAGS = [
@@ -59,7 +97,7 @@ st.markdown(f"<style>{(Path(__file__).parent / 'theme.css').read_text(encoding='
 # ---------------------------------------------------------------------------
 def api_get_tags() -> List[str]:
     try:
-        r = requests.get(f"{API_BASE_URL}/tags", timeout=3)
+        r = api.get(f"{API_BASE_URL}/tags", timeout=3)
         if r.status_code == 200 and r.json():
             return r.json()
     except Exception:
@@ -69,7 +107,7 @@ def api_get_tags() -> List[str]:
 
 def api_list_briefs() -> List[Dict[str, Any]]:
     try:
-        r = requests.get(f"{API_BASE_URL}/briefs", timeout=4)
+        r = api.get(f"{API_BASE_URL}/briefs", timeout=4)
         if r.status_code == 200:
             return r.json()
     except Exception:
@@ -79,7 +117,7 @@ def api_list_briefs() -> List[Dict[str, Any]]:
 
 def api_get_brief(brief_id: int) -> Optional[Dict[str, Any]]:
     try:
-        r = requests.get(f"{API_BASE_URL}/briefs/{brief_id}", timeout=4)
+        r = api.get(f"{API_BASE_URL}/briefs/{brief_id}", timeout=4)
         if r.status_code == 200:
             return r.json()
     except Exception as e:
@@ -92,7 +130,7 @@ def api_create_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Op
     try:
         payload: Dict[str, Any] = {"title": title, "tag_value": tag_value, "proxy_tags": proxy_tags or None,
                                    "idea_context": idea_context or None}
-        r = requests.post(
+        r = api.post(
             f"{API_BASE_URL}/briefs",
             json=payload,
             timeout=180,
@@ -107,7 +145,7 @@ def api_create_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Op
 
 def api_refine_idea(messages: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
     try:
-        r = requests.post(f"{API_BASE_URL}/ideas/refine", json={"messages": messages}, timeout=60)
+        r = api.post(f"{API_BASE_URL}/ideas/refine", json={"messages": messages}, timeout=60)
         if r.status_code == 200:
             return r.json()
         st.error(f"Idea assistant failed ({r.status_code}): {r.text}")
@@ -119,7 +157,7 @@ def api_refine_idea(messages: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
 def api_transcribe(audio: bytes) -> Optional[str]:
     """Speech-to-text on the backend (local Whisper). None on failure, after showing the error."""
     try:
-        r = requests.post(f"{API_BASE_URL}/ideas/transcribe",
+        r = api.post(f"{API_BASE_URL}/ideas/transcribe",
                           files={"audio": ("idea.wav", audio, "audio/wav")}, timeout=180)
         if r.status_code == 200:
             return r.json().get("text", "").strip()
@@ -127,6 +165,27 @@ def api_transcribe(audio: bytes) -> Optional[str]:
         st.error(f"Voice transcription failed ({r.status_code}): {detail}")
     except Exception as e:
         st.error(f"Connection error to backend: {e}. Is 'python -m uvicorn backend.main:app' running?")
+    return None
+
+
+def api_get_verification(brief_id: int) -> Optional[Dict[str, Any]]:
+    """The brief's verification report; None (no badge) if it can't be loaded."""
+    try:
+        r = api.get(f"{API_BASE_URL}/briefs/{brief_id}/verification", timeout=60)
+        return r.json() if r.status_code == 200 else None
+    except Exception:
+        return None
+
+
+def _radar_call(method: str, path: str, timeout: int = 10, **kw) -> Optional[Dict[str, Any]]:
+    try:
+        r = api.request(method, f"{API_BASE_URL}/radar{path}", timeout=timeout, **kw)
+        if r.status_code in (200, 201):
+            return r.json()
+        detail = r.json().get("detail", r.text) if r.headers.get("content-type", "").startswith("application/json") else r.text
+        st.error(f"Market radar request failed ({r.status_code}): {detail}")
+    except Exception as e:
+        st.error(f"Connection error to backend: {e}")
     return None
 
 
@@ -213,7 +272,7 @@ def render_idea_assistant(available_tags: List[str]) -> None:
 
 def _guideline_call(method: str, path: str, timeout: int = 10, **kw) -> Optional[Dict[str, Any]]:
     try:
-        r = requests.request(method, f"{API_BASE_URL}/briefs/{path}", timeout=timeout, **kw)
+        r = api.request(method, f"{API_BASE_URL}/briefs/{path}", timeout=timeout, **kw)
         if r.status_code == 200:
             return r.json()
         detail = r.json().get("detail", r.text) if r.headers.get("content-type", "").startswith("application/json") else r.text
@@ -267,9 +326,55 @@ def api_approve_letter(brief_id: int, key: str) -> bool:
     return _guideline_call("PUT", f"{brief_id}/letters/{key}/approve") is not None
 
 
+def api_get_operations(brief_id: int, volume_factor: float, caseload: Optional[float]) -> Optional[Dict[str, Any]]:
+    params = {"volume_factor": volume_factor, **({"caseload": caseload} if caseload else {})}
+    return _guideline_call("GET", f"{brief_id}/operations", timeout=60, params=params)
+
+
+def api_get_compliance(brief_id: int) -> Optional[Dict[str, Any]]:
+    return _guideline_call("GET", f"{brief_id}/compliance", timeout=60)
+
+
+def api_save_compliance_state(brief_id: int, state: str, fields: Dict[str, Any]) -> bool:
+    return _guideline_call("PUT", f"{brief_id}/compliance/{state}", json=fields) is not None
+
+
+def api_get_launch_gate(brief_id: int) -> Optional[Dict[str, Any]]:
+    return _guideline_call("GET", f"{brief_id}/launch-gate")
+
+
+def api_sign_launch_gate(brief_id: int, function: str, fields: Dict[str, str]) -> bool:
+    return _guideline_call("PUT", f"{brief_id}/launch-gate/{function}", json=fields) is not None
+
+
+def api_withdraw_signoff(brief_id: int, function: str) -> bool:
+    return _guideline_call("DELETE", f"{brief_id}/launch-gate/{function}") is not None
+
+
+def api_get_covered_claims(brief_id: int) -> Optional[Dict[str, Any]]:
+    return _guideline_call("GET", f"{brief_id}/covered-claims", timeout=60)
+
+
+def api_set_coverage_override(brief_id: int, fields: Dict[str, Any]) -> bool:
+    return _guideline_call("PUT", f"{brief_id}/covered-claims/override", json=fields, timeout=60) is not None
+
+
+def api_get_policy_form(brief_id: int) -> Optional[Dict[str, Any]]:
+    return _guideline_call("GET", f"{brief_id}/policy-form", timeout=60)
+
+
+def api_upload_policy_form(brief_id: int, filename: str, data: bytes) -> bool:
+    return _guideline_call("POST", f"{brief_id}/policy-form", timeout=120,
+                           files={"file": (filename, data)}) is not None
+
+
+def api_delete_policy_form(brief_id: int) -> bool:
+    return _guideline_call("DELETE", f"{brief_id}/policy-form") is not None
+
+
 def api_rerun_proxies(brief_id: int, proxy_tags: List[str]) -> bool:
     try:
-        r = requests.put(f"{API_BASE_URL}/briefs/{brief_id}/proxies", json={"proxy_tags": proxy_tags}, timeout=180)
+        r = api.put(f"{API_BASE_URL}/briefs/{brief_id}/proxies", json={"proxy_tags": proxy_tags}, timeout=180)
         if r.status_code == 200:
             return True
         st.error(f"Could not re-run with these proxies ({r.status_code}): {r.json().get('detail', r.text)}")
@@ -303,7 +408,7 @@ def render_proxy_controls(brief: Dict[str, Any], brief_data: Dict[str, Any], ava
 
 def api_update_claims(brief_id: int, new_text: str) -> bool:
     try:
-        r = requests.put(
+        r = api.put(
             f"{API_BASE_URL}/briefs/{brief_id}/claims",
             json={"claims_finding_text": new_text},
             timeout=4,
@@ -316,7 +421,7 @@ def api_update_claims(brief_id: int, new_text: str) -> bool:
 
 def api_approve_claims(brief_id: int) -> bool:
     try:
-        r = requests.put(f"{API_BASE_URL}/briefs/{brief_id}/claims/approve", timeout=4)
+        r = api.put(f"{API_BASE_URL}/briefs/{brief_id}/claims/approve", timeout=4)
         return r.status_code == 200
     except Exception as e:
         st.error(f"Failed to approve claims finding: {e}")
@@ -325,7 +430,7 @@ def api_approve_claims(brief_id: int) -> bool:
 
 def api_save_section_note(brief_id: int, section: int, note: str) -> bool:
     try:
-        r = requests.put(f"{API_BASE_URL}/briefs/{brief_id}/notes/{section}", json={"note": note}, timeout=4)
+        r = api.put(f"{API_BASE_URL}/briefs/{brief_id}/notes/{section}", json={"note": note}, timeout=4)
         if r.status_code == 200:
             return True
         st.error(f"Could not save note: {r.text}")
@@ -356,7 +461,7 @@ def render_edit_status(brief: Dict[str, Any]) -> None:
 
 def api_get_readiness(brief_id: int) -> Optional[Dict[str, Any]]:
     try:
-        r = requests.get(f"{API_BASE_URL}/briefs/{brief_id}/readiness", timeout=6)
+        r = api.get(f"{API_BASE_URL}/briefs/{brief_id}/readiness", timeout=6)
         return r.json() if r.status_code == 200 else None
     except Exception:
         return None
@@ -364,7 +469,7 @@ def api_get_readiness(brief_id: int) -> Optional[Dict[str, Any]]:
 
 def api_update_readiness(brief_id: int, item_id: str, fields: Dict[str, str]) -> bool:
     try:
-        r = requests.put(f"{API_BASE_URL}/briefs/{brief_id}/readiness/{item_id}", json=fields, timeout=6)
+        r = api.put(f"{API_BASE_URL}/briefs/{brief_id}/readiness/{item_id}", json=fields, timeout=6)
         if r.status_code == 200:
             return True
         st.error(f"Could not save: {r.text}")
@@ -376,7 +481,7 @@ def api_update_readiness(brief_id: int, item_id: str, fields: Dict[str, str]) ->
 
 def api_reject_claims(brief_id: int) -> bool:
     try:
-        r = requests.put(f"{API_BASE_URL}/briefs/{brief_id}/claims/reject", timeout=4)
+        r = api.put(f"{API_BASE_URL}/briefs/{brief_id}/claims/reject", timeout=4)
         return r.status_code == 200
     except Exception as e:
         st.error(f"Failed to reject claims finding: {e}")
@@ -419,60 +524,6 @@ def render_claims_kpis(kpis: Dict[str, Any]) -> None:
                 st.metric(label=label, value=value)
 
 
-# ---------------------------------------------------------------------------
-# Sidebar: Existing Briefs & Navigation
-# ---------------------------------------------------------------------------
-st.sidebar.markdown(
-    '<div class="rt-side-brand"><svg width="24" height="24" viewBox="0 0 32 32" fill="none" aria-hidden="true">'
-    '<circle cx="16" cy="16" r="11" stroke="#121318" stroke-width="3.2"/>'
-    '<path d="M5 16a11 11 0 0 1 11-11" stroke="#3D3FE0" stroke-width="3.2" stroke-linecap="round"/>'
-    '<circle cx="16" cy="16" r="3.4" fill="#3D3FE0"/></svg>Roundtable</div>'
-    '<div class="rt-side-sub">Guidewire pre-APD decision support</div>',
-    unsafe_allow_html=True,
-)
-st.sidebar.markdown("---")
-st.sidebar.markdown('<div class="rt-side-head">Decision briefs</div>', unsafe_allow_html=True)
-
-all_briefs = api_list_briefs()
-
-selected_brief_id: Optional[int] = None
-
-if all_briefs:
-    brief_options = {
-        f"#{b['id']} - {b['title']} ({b['claims_status']})": b["id"]
-        for b in all_briefs
-    }
-    # A brief generated on the last run opens straight away (set before the picker is drawn)
-    open_id = st.session_state.pop("open_brief_id", None)
-    open_label = next((lbl for lbl, bid in brief_options.items() if bid == open_id), None)
-    if open_label:
-        st.session_state.brief_picker = open_label
-    selected_label = st.sidebar.selectbox(
-        "Open a brief",
-        options=list(brief_options.keys()),
-        index=0,
-        key="brief_picker",
-    )
-    if selected_label:
-        selected_brief_id = brief_options[selected_label]
-else:
-    st.sidebar.info("No saved briefs yet. Generate your first brief on the right.")
-
-st.sidebar.markdown("---")
-st.sidebar.markdown(
-    '<div class="rt-side-head">Architecture principles</div>'
-    + "".join(
-        f'<div class="rt-principle"><i></i><div><b>{name}</b><span>{desc}</span></div></div>'
-        for name, desc in (
-            ("Numbers", "Python / SQL only"),
-            ("RAG", "Qualitative sources only"),
-            ("Citations", "Strictly verified"),
-            ("Sign-off", "Human-in-the-loop"),
-        )
-    ),
-    unsafe_allow_html=True,
-)
-
 # ===========================================================================
 # SESSION STATE & AUTHENTICATION MANAGEMENT
 # ===========================================================================
@@ -480,12 +531,81 @@ if "current_view" not in st.session_state:
     st.session_state.current_view = "home"  # "home" | "claims" | "actuarial" | "login"
 if "is_authenticated" not in st.session_state:
     st.session_state.is_authenticated = False
-if "user_role" not in st.session_state:
-    st.session_state.user_role = "Claims Lead"
-if "user_email" not in st.session_state:
-    st.session_state.user_email = ""
+if "auth_token" not in st.session_state:
+    _clear_session()
+if "login_role" not in st.session_state:
+    st.session_state.login_role = "Claims Lead"
 if "pending_view" not in st.session_state:
     st.session_state.pending_view = "claims"
+
+WORKSPACES = ("claims", "actuarial")
+# Each role opens only its own workspace (the backend enforces the same split on writes)
+ROLE_WORKSPACE = {"Claims Lead": "claims", "Lead Actuary": "actuarial"}
+WORKSPACE_ROLE = {v: k for k, v in ROLE_WORKSPACE.items()}
+ROLE_DEFAULT_EMAIL = {"Claims Lead": "claims.lead@carrier.com", "Lead Actuary": "lead.actuary@carrier.com"}
+
+
+def allowed_workspaces() -> tuple:
+    if not st.session_state.is_authenticated:
+        return WORKSPACES
+    own = ROLE_WORKSPACE.get(st.session_state.user_role)
+    return (own,) if own else ()
+
+
+def open_login(view: str) -> None:
+    """Send the user to sign-in with the role that owns `view` preselected."""
+    st.session_state.pending_view = view
+    st.session_state.login_role = WORKSPACE_ROLE.get(view, "Claims Lead")
+    st.session_state.login_email = ROLE_DEFAULT_EMAIL[st.session_state.login_role]
+    st.session_state.current_view = "login"
+
+
+if st.session_state.current_view == "radar" and not st.session_state.is_authenticated:
+    st.session_state.current_view = "login"
+# Workspaces need a session; a signed-in role that lands on another role's workspace is sent to its own
+if st.session_state.current_view in WORKSPACES and not st.session_state.is_authenticated:
+    open_login(st.session_state.current_view)
+elif st.session_state.current_view in WORKSPACES and st.session_state.current_view not in allowed_workspaces():
+    st.session_state.current_view = (allowed_workspaces() or ("home",))[0]
+
+# ---------------------------------------------------------------------------
+# Sidebar: decision briefs (only inside a signed-in workspace)
+# ---------------------------------------------------------------------------
+in_workspace = st.session_state.is_authenticated and st.session_state.current_view in WORKSPACES
+all_briefs = api_list_briefs() if in_workspace else []
+selected_brief_id: Optional[int] = None
+
+if in_workspace:
+    st.sidebar.markdown(
+        '<div class="rt-side-brand"><svg width="24" height="24" viewBox="0 0 32 32" fill="none" aria-hidden="true">'
+        '<circle cx="16" cy="16" r="11" stroke="#121318" stroke-width="3.2"/>'
+        '<path d="M5 16a11 11 0 0 1 11-11" stroke="#3D3FE0" stroke-width="3.2" stroke-linecap="round"/>'
+        '<circle cx="16" cy="16" r="3.4" fill="#3D3FE0"/></svg>Roundtable</div>'
+        '<div class="rt-side-sub">Guidewire pre-APD decision support</div>',
+        unsafe_allow_html=True,
+    )
+    st.sidebar.markdown("---")
+    st.sidebar.markdown('<div class="rt-side-head">Decision briefs</div>', unsafe_allow_html=True)
+    if all_briefs:
+        brief_options = {
+            f"#{b['id']} - {b['title']} ({b['claims_status']})": b["id"]
+            for b in all_briefs
+        }
+        # A brief generated on the last run opens straight away (set before the picker is drawn)
+        open_id = st.session_state.pop("open_brief_id", None)
+        open_label = next((lbl for lbl, bid in brief_options.items() if bid == open_id), None)
+        if open_label:
+            st.session_state.brief_picker = open_label
+        selected_label = st.sidebar.selectbox(
+            "Open a brief",
+            options=list(brief_options.keys()),
+            index=0,
+            key="brief_picker",
+        )
+        if selected_label:
+            selected_brief_id = brief_options[selected_label]
+    else:
+        st.sidebar.info("No saved briefs yet. Generate your first brief on the right.")
 
 # ===========================================================================
 # TOP SAAS NAVBAR (ChronoTask / Outcrowd Inspired Header)
@@ -502,25 +622,25 @@ st.markdown("""
     align-items: center;
     gap: 8px;
 }
-.st-key-nav_home .stButton > button[kind], .st-key-nav_claims .stButton > button[kind], .st-key-nav_actuarial .stButton > button[kind] {
+.st-key-nav_home .stButton > button[kind], .st-key-nav_claims .stButton > button[kind], .st-key-nav_actuarial .stButton > button[kind], .st-key-nav_radar .stButton > button[kind] {
     background: transparent !important;
     border: none !important;
     box-shadow: none !important;
     color: #121318 !important;
 }
-.st-key-nav_home .stButton > button[kind] p, .st-key-nav_claims .stButton > button[kind] p, .st-key-nav_actuarial .stButton > button[kind] p {
+.st-key-nav_home .stButton > button[kind] p, .st-key-nav_claims .stButton > button[kind] p, .st-key-nav_actuarial .stButton > button[kind] p, .st-key-nav_radar .stButton > button[kind] p {
     font-size: 0.9rem !important;
     font-weight: 500 !important;
     color: #121318 !important;
 }
-.st-key-nav_home .stButton > button[kind="primary"] p, .st-key-nav_claims .stButton > button[kind="primary"] p, .st-key-nav_actuarial .stButton > button[kind="primary"] p {
+.st-key-nav_home .stButton > button[kind="primary"] p, .st-key-nav_claims .stButton > button[kind="primary"] p, .st-key-nav_actuarial .stButton > button[kind="primary"] p, .st-key-nav_radar .stButton > button[kind="primary"] p {
     font-weight: 700 !important;
     text-decoration: underline;
     text-decoration-color: #3D3FE0;
     text-decoration-thickness: 2px;
     text-underline-offset: 6px;
 }
-.st-key-nav_home .stButton > button[kind]:hover p, .st-key-nav_claims .stButton > button[kind]:hover p, .st-key-nav_actuarial .stButton > button[kind]:hover p {
+.st-key-nav_home .stButton > button[kind]:hover p, .st-key-nav_claims .stButton > button[kind]:hover p, .st-key-nav_actuarial .stButton > button[kind]:hover p, .st-key-nav_radar .stButton > button[kind]:hover p {
     color: #3D3FE0 !important;
 }
 .st-key-nav_signin .stButton > button[kind], .st-key-nav_signout .stButton > button[kind] {
@@ -548,7 +668,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-nav_col1, nav_col2, nav_col3, nav_col4, nav_col5, nav_col6 = st.columns([2.8, 0.8, 0.8, 0.9, 2.4, 1.0])
+nav_col1, nav_col2, nav_col3, nav_col4, nav_radar, nav_col5, nav_col6 = st.columns([2.2, 0.9, 0.95, 1.05, 0.9, 1.6, 1.0])
 
 with nav_col1:
     st.markdown('<div class="navbar-brand" style="padding-top: 6px;"><svg width="26" height="26" viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="11" stroke="#121318" stroke-width="3.2"/><path d="M5 16a11 11 0 0 1 11-11" stroke="#3D3FE0" stroke-width="3.2" stroke-linecap="round"/><circle cx="16" cy="16" r="3.4" fill="#3D3FE0"/></svg>Roundtable</div>', unsafe_allow_html=True)
@@ -559,39 +679,46 @@ with nav_col2:
         st.rerun()
 
 with nav_col3:
-    if st.button("Claims", key="nav_claims", use_container_width=True, type=("primary" if st.session_state.current_view == "claims" else "secondary")):
+    if "claims" in allowed_workspaces() and st.button("Claims", key="nav_claims", use_container_width=True, type=("primary" if st.session_state.current_view == "claims" else "secondary")):
         if st.session_state.is_authenticated:
             st.session_state.current_view = "claims"
         else:
-            st.session_state.pending_view = "claims"
-            st.session_state.current_view = "login"
+            open_login("claims")
         st.rerun()
 
 with nav_col4:
-    if st.button("Actuarial", key="nav_actuarial", use_container_width=True, type=("primary" if st.session_state.current_view == "actuarial" else "secondary")):
+    if "actuarial" in allowed_workspaces() and st.button("Actuarial", key="nav_actuarial", use_container_width=True, type=("primary" if st.session_state.current_view == "actuarial" else "secondary")):
         if st.session_state.is_authenticated:
             st.session_state.current_view = "actuarial"
         else:
-            st.session_state.pending_view = "actuarial"
-            st.session_state.current_view = "login"
+            open_login("actuarial")
+        st.rerun()
+
+with nav_radar:
+    if st.session_state.is_authenticated and st.button("Radar", key="nav_radar", use_container_width=True,
+                                                       type=("primary" if st.session_state.current_view == "radar" else "secondary")):
+        st.session_state.current_view = "radar"
         st.rerun()
 
 with nav_col5:
     if st.session_state.is_authenticated:
-        st.markdown(f'<div style="text-align: right; padding-top: 8px;"><span class="user-badge">👤 {st.session_state.user_role}</span></div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="text-align: right; padding-top: 8px;"><span class="user-badge" title="{html.escape(st.session_state.user_email)}">👤 {html.escape(st.session_state.user_role)}</span></div>', unsafe_allow_html=True)
     else:
         st.markdown('<div style="text-align: right; padding-top: 8px; color: #5B5F6E; font-size: 0.82rem; font-weight: 500;">Enterprise access</div>', unsafe_allow_html=True)
 
 with nav_col6:
     if st.session_state.is_authenticated:
         if st.button("Sign Out", key="nav_signout", use_container_width=True):
-            st.session_state.is_authenticated = False
+            try:
+                api.post(f"{API_BASE_URL}/auth/logout", timeout=4)
+            except Exception:
+                pass  # the session is dropped locally either way
+            _clear_session()
             st.session_state.current_view = "home"
             st.rerun()
     else:
         if st.button("Sign In", key="nav_signin", type="primary", use_container_width=True):
-            st.session_state.pending_view = "claims"
-            st.session_state.current_view = "login"
+            open_login("claims")
             st.rerun()
 
 if st.session_state.current_view != "home":
@@ -601,12 +728,37 @@ if st.session_state.current_view != "home":
 # VIEW: LOGIN SCREEN
 # ===========================================================================
 if st.session_state.current_view == "login":
-    def _sign_in(email: str, role: str, view: str) -> None:
+    def _sign_in(email: str, password: str, role: str) -> None:
+        if not email.strip() or not password:
+            st.error("Enter your work email and password.")
+            return
+        try:
+            r = requests.post(f"{API_BASE_URL}/auth/login",
+                              json={"email": email, "password": password, "role": role}, timeout=8)
+        except Exception as e:
+            st.error(f"Connection error to backend: {e}. Is 'python -m uvicorn backend.main:app' running?")
+            return
+        if r.status_code != 200:
+            detail = r.json().get("detail") if r.headers.get("content-type", "").startswith("application/json") else None
+            st.error(detail if isinstance(detail, str) else f"Sign-in failed ({r.status_code}).")
+            return
+        data = r.json()
         st.session_state.is_authenticated = True
-        st.session_state.user_email = email
-        st.session_state.user_role = role
-        st.session_state.current_view = view
+        st.session_state.auth_token = data["token"]
+        st.session_state.user_email = data["user"]["email"]
+        st.session_state.user_name = data["user"]["name"]
+        st.session_state.user_role = data["user"]["role"]
+        st.session_state.current_view = ROLE_WORKSPACE[data["user"]["role"]]
         st.rerun()
+
+    def _pick_role(role: str) -> None:
+        st.session_state.login_role = role
+        st.session_state.login_email = ROLE_DEFAULT_EMAIL[role]
+        st.session_state.login_password = ""
+
+    if "login_email" not in st.session_state:
+        st.session_state.login_email = ROLE_DEFAULT_EMAIL[st.session_state.login_role]
+    login_role = st.session_state.login_role
 
     _, login_mid, _ = st.columns([0.5, 6, 0.5])
     with login_mid, st.container(key="login_card"):
@@ -615,30 +767,32 @@ if st.session_state.current_view == "login":
             st.markdown(
                 '<span class="rt-eyebrow"><i></i>Enterprise access</span>'
                 '<div class="rt-ws-title" style="font-size:2.1rem">Sign in to Roundtable</div>'
-                '<p class="rt-ws-sub" style="margin-bottom:1.4rem">Use your enterprise credentials to open the '
-                'Claims and Actuarial intelligence workspaces.</p>',
+                '<p class="rt-ws-sub" style="margin-bottom:1.2rem">Choose your role, then sign in with your '
+                'enterprise credentials. Each role opens its own workspace.</p>',
                 unsafe_allow_html=True,
             )
-            auth_email = st.text_input("Work email", value="analyst@guidewire-carrier.com", placeholder="name@company.com")
-            auth_pass = st.text_input("Password", value="••••••••••••", type="password")
+            notice = st.session_state.pop("auth_notice", None)
+            if notice:
+                st.warning(notice)
 
-            log_btn_col1, log_btn_col2 = st.columns(2)
-            with log_btn_col1:
-                if st.button("Sign in", type="primary", use_container_width=True):
-                    _sign_in(auth_email, "Insurance Specialist", st.session_state.pending_view)
-            with log_btn_col2:
-                if st.button("Back to home", use_container_width=True):
-                    st.session_state.current_view = "home"
-                    st.rerun()
+            role_c1, role_c2 = st.columns(2)
+            for col, role, view_label in ((role_c1, "Claims Lead", "Claims workspace"),
+                                          (role_c2, "Lead Actuary", "Actuarial workspace")):
+                with col:
+                    st.button(role, key=f"role_{ROLE_WORKSPACE[role]}", use_container_width=True,
+                              type=("primary" if login_role == role else "secondary"),
+                              on_click=_pick_role, args=(role,), help=f"Sign in to the {view_label}")
 
-            st.markdown('<div class="rt-login-divider"><span>Quick demo access</span></div>', unsafe_allow_html=True)
-            demo_c1, demo_c2 = st.columns(2)
-            with demo_c1:
-                if st.button("Claims Lead", use_container_width=True):
-                    _sign_in("claims.lead@carrier.com", "Claims Lead", "claims")
-            with demo_c2:
-                if st.button("Lead Actuary", use_container_width=True):
-                    _sign_in("lead.actuary@carrier.com", "Lead Actuary", "actuarial")
+            with st.form("login_form", border=False):
+                auth_email = st.text_input("Work email", key="login_email", placeholder="name@company.com")
+                auth_pass = st.text_input("Password", key="login_password", type="password")
+                submitted = st.form_submit_button(f"Sign in as {login_role}", type="primary",
+                                                  use_container_width=True)
+            if submitted:
+                _sign_in(auth_email, auth_pass, login_role)
+            if st.button("Back to home", use_container_width=True):
+                st.session_state.current_view = "home"
+                st.rerun()
 
         with art_col:
             stats = portfolio_stats()
@@ -647,7 +801,7 @@ if st.session_state.current_view == "login":
                 lr = stats["loss_ratio"]
                 art_cards = (
                     '<div class="rt-login-card a"><div class="l">Claims analyzed</div>'
-                    f'<div class="v">{stats["n_claims"]:,}</div><span class="rt-chip up">SQL verified</span></div>'
+                    f'<div class="v">{stats["n_claims"]:,}</div><span class="rt-chip warn">Synthetic demo data</span></div>'
                     '<div class="rt-login-card b"><div class="l">Portfolio loss ratio</div>'
                     f'<div class="v" style="color:var(--rt-indigo)">{(f"{lr:.1%}" if lr is not None else "—")}</div></div>'
                 )
@@ -663,14 +817,54 @@ if st.session_state.current_view == "login":
 # ===========================================================================
 elif st.session_state.current_view == "home":
     def _go_workspace(view: str) -> None:
-        if st.session_state.is_authenticated:
+        if not st.session_state.is_authenticated:
+            open_login(view)
+        elif view in allowed_workspaces():
             st.session_state.current_view = view
         else:
-            st.session_state.pending_view = view
-            st.session_state.current_view = "login"
+            st.toast(f"Signed in as {st.session_state.user_role}: the {view.title()} workspace "
+                     f"needs the {WORKSPACE_ROLE[view]} role.")
+            return
         st.rerun()
 
     render_home(_go_workspace)
+
+# ===========================================================================
+# VIEW: MARKET RADAR
+# ===========================================================================
+elif st.session_state.current_view == "radar":
+    def _radar_scan(topic: Optional[str]) -> None:
+        label = f"Scanning the news for '{topic}' (about 30 seconds)..." if topic else "Starting the scan..."
+        with st.spinner(label):
+            result = _radar_call("POST", "/scan", timeout=180, json={"topic": topic})
+        if result:
+            st.session_state.radar_notice = result["message"]
+            st.session_state.radar_focus = topic and (result.get("topic_ids") or [None])[0]
+            st.session_state.radar_found = bool(result.get("topic_ids")) if topic else True
+            st.rerun()
+
+    def _radar_act(action: str, topic_id: str) -> None:
+        if action == "open":
+            sig = next((x for x in radar_data["signals"] if x["topic_id"] == topic_id), None)
+            st.session_state.open_brief_id = sig and sig.get("brief_id")
+        elif action == "brief":
+            with st.spinner("Generating the decision brief from this signal..."):
+                created = _radar_call("POST", f"/signals/{topic_id}/brief", timeout=240)
+            if not created:
+                return
+            st.session_state.open_brief_id = created["id"]
+        else:
+            if not _radar_call("PUT", f"/signals/{topic_id}/{action}"):
+                return
+            st.rerun()
+        st.session_state.current_view = allowed_workspaces()[0]
+        st.rerun()
+
+    radar_data = _radar_call("GET", "", params={"include_dismissed": "true"})
+    notice = st.session_state.pop("radar_notice", None)
+    if notice:
+        (st.success if st.session_state.pop("radar_found", True) else st.warning)(notice)
+    render_radar(radar_data, _radar_scan, _radar_act, focus=st.session_state.get("radar_focus"))
 
 # ===========================================================================
 # VIEW: CLAIMS & ACTUARIAL WORKSPACES
@@ -681,7 +875,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
     workspace_caption = (
         "Directional loss estimation and portfolio exposure, computed in SQL and ready for actuarial sign-off."
         if is_actuarial_view else
-        "Verified ClaimCenter loss trends, competitor and regulatory evidence, and live research, with human sign-off."
+        "ClaimCenter-style loss trends, competitor and regulatory evidence, and live research, with human sign-off."
     )
     st.markdown(
         f'<div class="rt-ws-head"><span class="rt-eyebrow"><i></i>{"Actuarial" if is_actuarial_view else "Claims"} workspace'
@@ -689,12 +883,16 @@ elif st.session_state.current_view in ("claims", "actuarial"):
         f'<div class="rt-ws-title">{workspace_title}</div><p class="rt-ws-sub">{workspace_caption}</p></div>',
         unsafe_allow_html=True,
     )
+    st.info("**Prototype — synthetic demo data.** Claims, policies and premiums in roundtable.db are generated "
+            "(data/generate_data.py) in Guidewire ClaimCenter / PolicyCenter shape. Every figure is computed honestly "
+            "from that data, but it is illustrative: do not use it for real product, pricing or reserving decisions.",
+            icon="🧪")
     ws_stats = portfolio_stats()
     if ws_stats.get("ok"):
         ws_lr = ws_stats["loss_ratio"]
         stat_tiles = (
             ("Claims analyzed", f'{ws_stats["n_claims"]:,}', '<span class="rt-chip indigo">ClaimCenter</span>'),
-            ("Total incurred", money_short(ws_stats["incurred"]), '<span class="rt-chip up">SQL verified</span>'),
+            ("Total incurred", money_short(ws_stats["incurred"]), '<span class="rt-chip warn">synthetic</span>'),
             ("Portfolio loss ratio", f"{ws_lr:.1%}" if ws_lr is not None else "—", '<span class="rt-chip grey">incurred / earned</span>'),
             ("Decision briefs", f"{len(all_briefs):,}", '<span class="rt-chip lime">human sign-off</span>'),
         )
@@ -805,11 +1003,13 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                           if head_basis.get("basis") == "line_baseline" else "")
             status = brief.get("claims_status", "Draft")
             badge_class = "status-approved" if status == "Approved" else ("status-rejected" if status == "Rejected" else "status-pending")
+            brief_check = api_get_verification(brief["id"])
             chips = (
                 f'<span class="rt-chip {"indigo" if matched else "grey"}">Risk tag · {tag_display if matched else "unmatched"}</span>'
                 f'<span class="rt-chip {"up" if matched else "warn"}">Match confidence {conf_pct}'
                 f'{"" if matched else " · below 50%"}</span>'
                 f'{basis_chip}'
+                f'{chip_html(brief_check)}'
                 f'<span class="rt-chip grey">Created {brief["created_at"][:16].replace("T", " ")}</span>'
             )
             st.markdown(
@@ -818,6 +1018,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                 f'<div class="status"><small>Sign-off status</small><span class="status-badge {badge_class}">{status.upper()}</span></div></div>',
                 unsafe_allow_html=True,
             )
+            render_verification(brief_check, "brief")
             pm_context = (brief.get("brief_data") or {}).get("idea_context")
             if pm_context:
                 with st.expander("PM's idea description (background, not evidence)"):
@@ -832,15 +1033,19 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                     "Regulatory compliance",
                     "Live web research",
                 ])
-                tab_readiness = tab_guideline = tab_scenarios = tab_letters = None
+                tab_readiness = tab_wording = tab_guideline = tab_scenarios = tab_letters = None
+                tab_operations = tab_gate = None
             else:
-                (tab_primary, tab_readiness, tab_guideline, tab_scenarios, tab_letters, tab_market, tab_underwriting,
-                 tab_compliance, tab_external) = st.tabs([
+                (tab_primary, tab_readiness, tab_wording, tab_guideline, tab_scenarios, tab_letters, tab_operations,
+                 tab_gate, tab_market, tab_underwriting, tab_compliance, tab_external) = st.tabs([
                     "Claims review",
                     "Claims readiness",
+                    "Policy wording",
                     "Handling guideline",
                     "Test scenarios",
                     "Customer letters",
+                    "Launch operations",
+                    "Launch gate",
                     "Competitor intelligence",
                     "Underwriting review",
                     "Regulatory compliance",
@@ -862,7 +1067,8 @@ elif st.session_state.current_view in ("claims", "actuarial"):
             with tab_primary:
                 if is_actuarial_view:
                     st.markdown("### Actuarial Loss Distribution & Directional Exposure")
-                    st.caption("Quantitative loss aggregation computed directly via pure SQL queries from verified claims data.")
+                    st.caption("Quantitative loss aggregation computed directly via pure SQL queries from the synthetic demo "
+                               "claims data.")
 
                     m_col1, m_col2, m_col3, m_col4 = st.columns(4)
                     with m_col1:
@@ -905,7 +1111,8 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                     )
                 else:
                     st.markdown("### Claims Intelligence & Loss Trend Analysis")
-                    st.caption("Grounded directly in verified Guidewire ClaimCenter claims data (roundtable.db).")
+                    st.caption("Computed from synthetic, ClaimCenter-shaped demo claims data (roundtable.db) — the "
+                               "method is real, the figures are illustrative.")
 
                     m_col1, m_col2, m_col3, m_col4 = st.columns(4)
                     with m_col1:
@@ -960,7 +1167,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                             st.markdown(brief["claims_finding_text"].replace("\n• ", "\n\n• "))
 
                     if internal_ev:
-                        with st.expander(f"Verified claims source citations ({sum(len(ev.get('citations', [])) for ev in internal_ev)})"):
+                        with st.expander(f"Claims data citations ({sum(len(ev.get('citations', [])) for ev in internal_ev)})"):
                             for ev in internal_ev:
                                 for c in ev.get("citations", []):
                                     st.markdown(f"`{c.get('source_url', '')}` — {c.get('claim', '')}")
@@ -1108,6 +1315,19 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                         api_get_readiness(brief["id"]),
                         save_item=lambda item_id, fields, bid=brief["id"]: api_update_readiness(bid, item_id, fields),
                     )
+                with tab_wording:
+                    render_policy_form(
+                        brief,
+                        api_get_policy_form(brief["id"]),
+                        upload=lambda name, data, bid=brief["id"]: api_upload_policy_form(bid, name, data),
+                        remove=lambda bid=brief["id"]: api_delete_policy_form(bid),
+                    )
+                    st.markdown("---")
+                    render_covered_claims(
+                        brief,
+                        api_get_covered_claims(brief["id"]),
+                        decide=lambda fields, bid=brief["id"]: api_set_coverage_override(bid, fields),
+                    )
                 with tab_guideline:
                     render_guideline(
                         brief,
@@ -1132,6 +1352,20 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                         draft=lambda bid=brief["id"]: api_draft_letters(bid),
                         save=lambda key, subject, body, bid=brief["id"]: api_save_letter(bid, key, subject, body),
                         approve=lambda key, bid=brief["id"]: api_approve_letter(bid, key),
+                    )
+                with tab_operations:
+                    render_operations(
+                        brief,
+                        get_plan=lambda factor, caseload, bid=brief["id"]: api_get_operations(bid, factor, caseload),
+                        compliance=api_get_compliance(brief["id"]),
+                        save_state=lambda state, fields, bid=brief["id"]: api_save_compliance_state(bid, state, fields),
+                    )
+                with tab_gate:
+                    render_launch_gate(
+                        brief,
+                        api_get_launch_gate(brief["id"]),
+                        sign=lambda function, fields, bid=brief["id"]: api_sign_launch_gate(bid, function, fields),
+                        withdraw=lambda function, bid=brief["id"]: api_withdraw_signoff(bid, function),
                     )
 
             # ---------------------------------------------------------------
