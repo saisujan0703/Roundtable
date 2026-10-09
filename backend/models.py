@@ -231,6 +231,15 @@ class ProductBrief(BaseModel):
         description="Deterministic post-generation check of the model-written text (backend.verification); "
                     "filled server-side, never by the model."
     )
+    evidence_conflicts: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Places where the brief's evidence disagrees (backend.conflicts), for the reviewer; "
+                    "filled server-side, never by the model."
+    )
+    evidence_conflict_checks: List[str] = Field(
+        default_factory=list,
+        description="Which conflict checks could run on this brief (they depend on the evidence it has)."
+    )
     human_approval_required: bool = Field(
         default=True,
         description="Enforces human sign-off requirement before APD mapping.",

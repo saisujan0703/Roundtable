@@ -29,7 +29,7 @@ try:
 except ImportError:
     pass
 
-from backend import llm_client, verification
+from backend import conflicts, llm_client, verification
 from backend.analytics import build_claims_analytics, get_line_baseline, list_tags
 from backend.models import (
     BriefEvidence,
@@ -1039,7 +1039,7 @@ def generate_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Opti
         brief.external_market_error_message = ext_err
         brief.idea_context = idea_context
         brief.verification = _computed_verification(brief)
-        return brief
+        return _with_conflicts(brief, payload)
 
     try:
         # Guardrail 3: Isolated structured user message preventing prompt injection
@@ -1063,7 +1063,8 @@ def generate_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Opti
         # Fields filled server-side (research, analytics, basis, PM context) are not part of the model's output
         if "properties" in claude_brief_schema:
             for field in ("external_market_evidence", "external_market_status", "external_market_error_message", "claims_kpis",
-                          "claims_analytics", "analysis_basis", "proxy_tags", "idea_context", "verification"):
+                          "claims_analytics", "analysis_basis", "proxy_tags", "idea_context", "verification",
+                          "evidence_conflicts", "evidence_conflict_checks"):
                 claude_brief_schema["properties"].pop(field, None)
         if "required" in claude_brief_schema:
             claude_brief_schema["required"] = [
@@ -1108,7 +1109,7 @@ def generate_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Opti
                                 retry=lambda issues: _finish(_ask(messages + [
                                     {"role": "assistant", "content": json.dumps(submitted)},
                                     {"role": "user", "content": verification.feedback(issues)}])))
-        return brief
+        return _with_conflicts(brief, payload)
 
     except Exception as e:
         print(f"[NOTE: Live API Error] Brief synthesis failed: {type(e).__name__}: {e}")
@@ -1120,7 +1121,18 @@ def generate_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Opti
         error_brief.idea_context = idea_context
         error_brief.verification = _computed_verification(error_brief, f"The AI brief failed ({type(e).__name__}); "
                                                                         "this is the computed brief instead.")
-        return error_brief
+        return _with_conflicts(error_brief, payload)
+
+
+def _with_conflicts(brief: ProductBrief, payload: Dict[str, Any]) -> ProductBrief:
+    """Attach the evidence conflicts found in the finished brief (shown to the reviewer, never auto-fixed)."""
+    try:
+        use_ai = conflicts.ai_cross_check_enabled() and llm_client.provider() is not None
+        brief.evidence_conflicts, brief.evidence_conflict_checks = conflicts.detect_conflicts(
+            brief.model_dump(), payload.get("retrieved_evidence") or [], use_ai=use_ai)
+    except Exception as e:  # a detector bug must never cost the user their brief
+        print(f"[NOTE: Conflict detection failed] {type(e).__name__}: {e}")
+    return brief
 
 
 def _computed_verification(brief: ProductBrief, note: Optional[str] = None) -> Dict[str, Any]:
