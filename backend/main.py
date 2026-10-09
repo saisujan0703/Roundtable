@@ -20,6 +20,7 @@ from backend.database import get_connection
 from backend.llm import MAX_PROXY_TAGS, generate_brief, resolve_analysis_basis, resolve_risk_tag_with_confidence
 from backend import auth
 from backend import market_radar
+from backend import pricing
 from backend import readiness
 from backend.idea_assistant import refine_idea
 from backend import speech
@@ -1139,6 +1140,27 @@ def get_covered_claims(brief_id: int):
     still excluded by the wording, or not payable for other reasons."""
     with get_connection() as conn:
         return {"brief_id": brief_id, **_covered_claims(conn, brief_id), "groups": covered_claims.GROUPS}
+
+
+@app.get("/api/briefs/{brief_id}/pricing")
+def get_rate_indication(brief_id: int, experience_years: Optional[int] = None, months_to_effective: Optional[int] = None,
+                        frequency_trend_pct: Optional[float] = None, severity_trend_pct: Optional[float] = None,
+                        ulae_pct: Optional[float] = None, expense_ratio_pct: Optional[float] = None,
+                        profit_pct: Optional[float] = None, apply_development: Optional[bool] = None):
+    """Directional rate indication for the new coverage (backend.pricing): the newly covered claims' loss cost,
+    trended and loaded. Query parameters override the default assumptions; nothing is stored."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT brief_json FROM briefs WHERE id = ?", (brief_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Brief #{brief_id} not found")
+        brief = json.loads(row["brief_json"]) if row["brief_json"] else {}
+        covered = _covered_claims(conn, brief_id)
+    overrides = {k: v for k, v in dict(
+        experience_years=experience_years, months_to_effective=months_to_effective,
+        frequency_trend_pct=frequency_trend_pct, severity_trend_pct=severity_trend_pct, ulae_pct=ulae_pct,
+        expense_ratio_pct=expense_ratio_pct, profit_pct=profit_pct, apply_development=apply_development).items()
+        if v is not None}
+    return {"brief_id": brief_id, **pricing.rate_indication(brief.get("claims_analytics") or {}, overrides, covered)}
 
 
 @app.put("/api/briefs/{brief_id}/covered-claims/override")
