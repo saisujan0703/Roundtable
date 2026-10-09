@@ -22,8 +22,10 @@ def _md(text: Optional[str]) -> str:
 
 
 def render_launch_gate(brief: Dict[str, Any], data: Optional[Dict[str, Any]],
-                       sign: Callable[[str, Dict[str, str]], bool], withdraw: Callable[[str], bool]) -> None:
-    """Render the tab. *sign(function, {name, decision, note})* and *withdraw(function)* call the backend."""
+                       sign: Callable[[str, Dict[str, str]], bool], withdraw: Callable[[str], bool],
+                       can_sign: Callable[[str], bool] = lambda function: True) -> None:
+    """Render the tab. *sign(function, {name, decision, note})* and *withdraw(function)* call the backend;
+    *can_sign(function)* says whether the signed-in role may sign that function (others are shown read-only)."""
     st.markdown("### Launch Gate")
     st.caption("One go / no-go decision for this coverage. The criteria are read from the other tabs and can't be "
                "ticked by hand; each function signs off once they are all met. Changing a signed-off artifact "
@@ -63,6 +65,10 @@ def render_launch_gate(brief: Dict[str, Any], data: Optional[Dict[str, Any]],
                 if s["stale"]:
                     st.warning("The finding, guideline, scenarios, letters or compliance matrix changed after this "
                                "approval. Sign again to confirm it still stands.")
+            if not can_sign(s["function"]):
+                where = "Actuarial workspace (Lead Actuary)" if s["function"] == "actuarial" else "Claims workspace (Claims Lead)"
+                st.caption(f"Signed from the {where}.")
+                continue
             with st.form(key=f"{key}_form", border=False):
                 a, b = st.columns([1, 1])
                 name = a.text_input("Name", value=s.get("name", ""), key=f"{key}_name")

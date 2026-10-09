@@ -29,6 +29,7 @@ from operations_panel import render_operations
 from launch_gate_panel import render_launch_gate
 from policy_form_panel import render_policy_form
 from coverage_panel import render_covered_claims
+from pricing_panel import render_pricing
 from radar_panel import render_radar
 from verification_badge import chip_html, render_verification
 from home_page import money_short, portfolio_stats, render_home, sculpture_svg
@@ -133,7 +134,7 @@ def api_create_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Op
         r = api.post(
             f"{API_BASE_URL}/briefs",
             json=payload,
-            timeout=180,
+            timeout=300,  # brief synthesis, a possible retry and the evidence cross-check, each a model call
         )
         if r.status_code in (200, 201):
             return r.json()
@@ -145,7 +146,8 @@ def api_create_brief(title: str, tag_value: Optional[str] = None, proxy_tags: Op
 
 def api_refine_idea(messages: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
     try:
-        r = api.post(f"{API_BASE_URL}/ideas/refine", json={"messages": messages}, timeout=60)
+        # Several model turns when it looks up Guidewire entities and typelists
+        r = api.post(f"{API_BASE_URL}/ideas/refine", json={"messages": messages}, timeout=150)
         if r.status_code == 200:
             return r.json()
         st.error(f"Idea assistant failed ({r.status_code}): {r.text}")
@@ -190,6 +192,56 @@ def _radar_call(method: str, path: str, timeout: int = 10, **kw) -> Optional[Dic
 
 
 TAG_AUTO = "(Optional) Auto-detect from title"
+
+_CONFLICT_ICON = {"high": "🔴", "medium": "🟠", "low": "🟡"}
+
+# Line icons for the workspace stat tiles (stroke follows the tile's tone colour)
+_SVG = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' \
+       'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{}</svg>'
+STAT_ICONS = {
+    "claims": _SVG.format('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'
+                          '<path d="M9 13h6M9 17h4"/>'),
+    "money": _SVG.format('<path d="M12 2v20"/><path d="M17 6H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>'),
+    "ratio": _SVG.format('<path d="M21 12A9 9 0 1 1 12 3"/><path d="M21 12A9 9 0 0 0 12 3v9z"/>'),
+    "briefs": _SVG.format('<path d="M9 12l2 2 4-4"/><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/>'),
+}
+
+# Sidebar brief sections: Material icon per section
+SECTION_ICONS = {
+    "Claims review": ":material/query_stats:", "Actuarial review": ":material/functions:",
+    "Rate indication": ":material/price_check:",
+    "Claims readiness": ":material/task_alt:", "Policy wording": ":material/description:",
+    "Handling guideline": ":material/menu_book:", "Test scenarios": ":material/science:",
+    "Customer letters": ":material/mail:", "Launch operations": ":material/rocket_launch:",
+    "Launch gate": ":material/verified:", "Competitor intelligence": ":material/storefront:",
+    "Underwriting review": ":material/shield:", "Regulatory compliance": ":material/gavel:",
+    "Live web research": ":material/travel_explore:",
+}
+
+
+def render_conflicts(conflicts: Optional[List[Dict[str, Any]]], checks: List[str]) -> None:
+    """Where the brief's evidence disagrees: both sides with their sources, for the reviewer to weigh.
+    None means the brief predates the check, so nothing is shown."""
+    if conflicts is None:
+        return
+    checked = f"Checks run on this brief: {'; '.join(checks)}." if checks else ""
+    if not conflicts:
+        with st.expander("⚖️ Conflicting evidence · none found"):
+            st.caption(f"No disagreements found. {checked}")
+        return
+    high = sum(1 for c in conflicts if c.get("severity") == "high")
+    with st.expander(f"⚖️ Conflicting evidence ({len(conflicts)})", expanded=bool(high)):
+        st.caption("Each item shows two pieces of evidence that disagree; neither side is assumed right, and the brief "
+                   f"itself is unchanged. AI-found items are kept only when both quotes appear word for word in their sources. {checked}")
+        for c in conflicts:
+            st.markdown(f"{_CONFLICT_ICON.get(c.get('severity'), '⚪')} **{html.escape(c.get('summary', ''))}**")
+            cols = st.columns(len(c.get("sides") or []) or 1)
+            for col, side in zip(cols, c.get("sides") or []):
+                url = side.get("url") or ""
+                link = (f'<br><a href="{html.escape(url)}" target="_blank" rel="noopener">source</a>' if url.startswith("http")
+                        else f"<br><code>{html.escape(url)}</code>" if url else "")
+                col.markdown(f'<div class="citation-block"><b>{html.escape(side.get("label", ""))}</b><br>'
+                             f'{html.escape(side.get("text", ""))}{link}</div>', unsafe_allow_html=True)
 
 
 def render_idea_assistant(available_tags: List[str]) -> None:
@@ -237,6 +289,12 @@ def render_idea_assistant(available_tags: List[str]) -> None:
                 st.caption("No direct claims pattern — proxy history: " + ", ".join(f"`{p}`" for p in proxies))
             else:
                 st.caption("No related claims pattern — the brief will use the line-of-business baseline.")
+            points = sug.get("guidewire_touchpoints") or []
+            if points:
+                with st.expander(f"Guidewire touchpoints ({len(points)}), checked against the data dictionaries"):
+                    for p in points:
+                        app = "PolicyCenter" if p["app"] == "PC" else "ClaimCenter"
+                        st.markdown(f"- `{p['name']}` ({app} {p['kind']}): {p['why']}")
             for i, title in enumerate(sug["title_options"]):
                 st.button(f"Use “{title}”", key=f"idea_use_{i}", on_click=_apply, args=(title, tag, proxies),
                           use_container_width=True)
@@ -351,6 +409,11 @@ def api_withdraw_signoff(brief_id: int, function: str) -> bool:
     return _guideline_call("DELETE", f"{brief_id}/launch-gate/{function}") is not None
 
 
+def api_get_pricing(brief_id: int, overrides: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    params = {k: (str(v).lower() if isinstance(v, bool) else v) for k, v in overrides.items()}
+    return _guideline_call("GET", f"{brief_id}/pricing", timeout=60, params=params)
+
+
 def api_get_covered_claims(brief_id: int) -> Optional[Dict[str, Any]]:
     return _guideline_call("GET", f"{brief_id}/covered-claims", timeout=60)
 
@@ -374,7 +437,7 @@ def api_delete_policy_form(brief_id: int) -> bool:
 
 def api_rerun_proxies(brief_id: int, proxy_tags: List[str]) -> bool:
     try:
-        r = api.put(f"{API_BASE_URL}/briefs/{brief_id}/proxies", json={"proxy_tags": proxy_tags}, timeout=180)
+        r = api.put(f"{API_BASE_URL}/briefs/{brief_id}/proxies", json={"proxy_tags": proxy_tags}, timeout=300)
         if r.status_code == 200:
             return True
         st.error(f"Could not re-run with these proxies ({r.status_code}): {r.json().get('detail', r.text)}")
@@ -877,32 +940,35 @@ elif st.session_state.current_view in ("claims", "actuarial"):
         if is_actuarial_view else
         "ClaimCenter-style loss trends, competitor and regulatory evidence, and live research, with human sign-off."
     )
-    st.markdown(
-        f'<div class="rt-ws-head"><span class="rt-eyebrow"><i></i>{"Actuarial" if is_actuarial_view else "Claims"} workspace'
-        f' · {st.session_state.user_role}</span>'
-        f'<div class="rt-ws-title">{workspace_title}</div><p class="rt-ws-sub">{workspace_caption}</p></div>',
-        unsafe_allow_html=True,
-    )
-    st.info("**Prototype — synthetic demo data.** Claims, policies and premiums in roundtable.db are generated "
-            "(data/generate_data.py) in Guidewire ClaimCenter / PolicyCenter shape. Every figure is computed honestly "
-            "from that data, but it is illustrative: do not use it for real product, pricing or reserving decisions.",
-            icon="🧪")
+    # Hero: title, the synthetic-data notice and the portfolio stats in one card (styles: .rt-hero in theme.css)
+    title_main, title_accent = workspace_title.split(" ", 1)
     ws_stats = portfolio_stats()
+    stat_html = ""
     if ws_stats.get("ok"):
         ws_lr = ws_stats["loss_ratio"]
         stat_tiles = (
-            ("Claims analyzed", f'{ws_stats["n_claims"]:,}', '<span class="rt-chip indigo">ClaimCenter</span>'),
-            ("Total incurred", money_short(ws_stats["incurred"]), '<span class="rt-chip warn">synthetic</span>'),
-            ("Portfolio loss ratio", f"{ws_lr:.1%}" if ws_lr is not None else "—", '<span class="rt-chip grey">incurred / earned</span>'),
-            ("Decision briefs", f"{len(all_briefs):,}", '<span class="rt-chip lime">human sign-off</span>'),
+            ("Claims analyzed", f'{ws_stats["n_claims"]:,}', "ClaimCenter", "indigo", STAT_ICONS["claims"]),
+            ("Total incurred", money_short(ws_stats["incurred"]), "synthetic", "warn", STAT_ICONS["money"]),
+            ("Portfolio loss ratio", f"{ws_lr:.1%}" if ws_lr is not None else "—", "incurred / earned", "grey", STAT_ICONS["ratio"]),
+            ("Decision briefs", f"{len(all_briefs):,}", "human sign-off", "lime", STAT_ICONS["briefs"]),
         )
-        st.markdown(
-            '<div class="rt-stat-row">'
-            + "".join(f'<div class="rt-stat"><div class="l">{lbl}{chip}</div><div class="v">{val}</div></div>'
-                      for lbl, val, chip in stat_tiles)
-            + "</div>",
-            unsafe_allow_html=True,
-        )
+        stat_html = '<div class="rt-stat-row">' + "".join(
+            f'<div class="rt-stat {tone}"><div class="ico">{icon}</div><div class="l">{lbl}</div>'
+            f'<div class="v">{val}</div><span class="rt-chip {tone}">{chip}</span></div>'
+            for lbl, val, chip, tone, icon in stat_tiles) + "</div>"
+    st.markdown(
+        f'<div class="rt-hero"><div class="rt-hero-top"><div>'
+        f'<span class="rt-eyebrow"><i></i>{"Actuarial" if is_actuarial_view else "Claims"} workspace'
+        f' · {html.escape(st.session_state.user_role)}</span>'
+        f'<div class="rt-ws-title">{title_main} <span class="accent">{title_accent}</span></div>'
+        f'<p class="rt-ws-sub">{workspace_caption}</p></div>'
+        '<div class="rt-proto" title="Claims, policies and premiums in roundtable.db are generated (data/generate_data.py) in '
+        'Guidewire ClaimCenter / PolicyCenter shape. Every figure is computed honestly from that data, but it is illustrative.">'
+        '<b>🧪 Prototype · synthetic demo data</b><span>Figures are computed honestly but illustrative — not for real '
+        'product, pricing or reserving decisions.</span></div></div>'
+        f'{stat_html}</div>',
+        unsafe_allow_html=True,
+    )
 
     # -----------------------------------------------------------------------
     # Section 1: New Brief Creation
@@ -1019,38 +1085,31 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                 unsafe_allow_html=True,
             )
             render_verification(brief_check, "brief")
+            render_conflicts((brief.get("brief_data") or {}).get("evidence_conflicts"),
+                             (brief.get("brief_data") or {}).get("evidence_conflict_checks") or [])
             pm_context = (brief.get("brief_data") or {}).get("idea_context")
             if pm_context:
                 with st.expander("PM's idea description (background, not evidence)"):
                     st.markdown(pm_context)
 
-            # Organize tabs according to the selected workspace
-            if is_actuarial_view:
-                tab_primary, tab_market, tab_underwriting, tab_compliance, tab_external = st.tabs([
-                    "Actuarial review",
-                    "Competitor intelligence",
-                    "Underwriting review",
-                    "Regulatory compliance",
-                    "Live web research",
-                ])
-                tab_readiness = tab_wording = tab_guideline = tab_scenarios = tab_letters = None
-                tab_operations = tab_gate = None
-            else:
-                (tab_primary, tab_readiness, tab_wording, tab_guideline, tab_scenarios, tab_letters, tab_operations,
-                 tab_gate, tab_market, tab_underwriting, tab_compliance, tab_external) = st.tabs([
-                    "Claims review",
-                    "Claims readiness",
-                    "Policy wording",
-                    "Handling guideline",
-                    "Test scenarios",
-                    "Customer letters",
-                    "Launch operations",
-                    "Launch gate",
-                    "Competitor intelligence",
-                    "Underwriting review",
-                    "Regulatory compliance",
-                    "Live web research",
-                ])
+            # Brief sections, picked in the sidebar under the brief picker; only the open one is drawn
+            sections = (["Actuarial review", "Rate indication", "Launch gate"] if is_actuarial_view else
+                        ["Claims review", "Claims readiness", "Policy wording", "Handling guideline", "Test scenarios",
+                         "Customer letters", "Launch operations", "Launch gate"]) + [
+                "Competitor intelligence", "Underwriting review", "Regulatory compliance", "Live web research"]
+            st.sidebar.markdown('<div class="rt-side-head" style="margin-top:1.4rem">Brief sections</div>',
+                                unsafe_allow_html=True)
+            section_key = f"brief_section_{'actuarial' if is_actuarial_view else 'claims'}"
+            if st.session_state.get(section_key) not in sections:
+                st.session_state[section_key] = sections[0]
+            # Drawn like the old tab bar, stacked: the open section is the dark pill (styles in theme.css)
+            with st.sidebar.container(key="brief_sections"):
+                for i, name in enumerate(sections):
+                    if st.button(name, key=f"brief_sec_{i}", use_container_width=True, icon=SECTION_ICONS.get(name),
+                                 type="primary" if st.session_state[section_key] == name else "secondary"):
+                        st.session_state[section_key] = name
+                        st.rerun()
+            section = st.session_state[section_key]
 
             brief_data = brief.get("brief_data") or {}
             internal_ev = brief_data.get("internal_evidence", [])
@@ -1064,7 +1123,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
             # ---------------------------------------------------------------
             # PRIMARY TAB (Claims or Actuarial depending on current workspace)
             # ---------------------------------------------------------------
-            with tab_primary:
+            if section == sections[0]:
                 if is_actuarial_view:
                     st.markdown("### Actuarial Loss Distribution & Directional Exposure")
                     st.caption("Quantitative loss aggregation computed directly via pure SQL queries from the synthetic demo "
@@ -1208,7 +1267,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
             # ---------------------------------------------------------------
             # TAB 2: COMPETITOR INTELLIGENCE (Included in both workspaces)
             # ---------------------------------------------------------------
-            with tab_market:
+            if section == "Competitor intelligence":
                 st.markdown("### Competitor Intelligence")
                 st.caption("Qualitative market filings retrieved via RAG from verified competitor sources.")
 
@@ -1252,7 +1311,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
             # ---------------------------------------------------------------
             # TAB 3: UNDERWRITING REVIEW
             # ---------------------------------------------------------------
-            with tab_underwriting:
+            if section == "Underwriting review":
                 st.markdown("### Underwriting Review")
                 st.info("Underwriting eligibility rules and policy condition guidelines.")
                 rec = brief_data.get("recommendation")
@@ -1264,7 +1323,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
             # ---------------------------------------------------------------
             # TAB 4: REGULATORY COMPLIANCE
             # ---------------------------------------------------------------
-            with tab_compliance:
+            if section == "Regulatory compliance":
                 st.markdown("### Regulatory Compliance")
                 st.caption("Insurance Department bulletins and statutory standards retrieved via RAG.")
 
@@ -1308,14 +1367,14 @@ elif st.session_state.current_view in ("claims", "actuarial"):
             # ---------------------------------------------------------------
             # CLAIMS READINESS (Claims workspace only)
             # ---------------------------------------------------------------
-            if tab_readiness is not None:
-                with tab_readiness:
+            if not is_actuarial_view:
+                if section == "Claims readiness":
                     render_readiness(
                         brief,
                         api_get_readiness(brief["id"]),
                         save_item=lambda item_id, fields, bid=brief["id"]: api_update_readiness(bid, item_id, fields),
                     )
-                with tab_wording:
+                if section == "Policy wording":
                     render_policy_form(
                         brief,
                         api_get_policy_form(brief["id"]),
@@ -1328,7 +1387,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                         api_get_covered_claims(brief["id"]),
                         decide=lambda fields, bid=brief["id"]: api_set_coverage_override(bid, fields),
                     )
-                with tab_guideline:
+                if section == "Handling guideline":
                     render_guideline(
                         brief,
                         api_get_guideline(brief["id"]),
@@ -1336,8 +1395,8 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                         save_section=lambda key, body, bid=brief["id"]: api_save_guideline_section(bid, key, body),
                         approve=lambda bid=brief["id"]: api_approve_guideline(bid),
                     )
-                letters_data = api_get_letters(brief["id"])
-                with tab_scenarios:
+                letters_data = api_get_letters(brief["id"]) if section in ("Test scenarios", "Customer letters") else None
+                if section == "Test scenarios":
                     render_scenarios(
                         brief,
                         api_get_scenarios(brief["id"]),
@@ -1345,7 +1404,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                         save=lambda sid, fields, bid=brief["id"]: api_save_scenario(bid, sid, fields),
                         letters=letters_data,
                     )
-                with tab_letters:
+                if section == "Customer letters":
                     render_letters(
                         brief,
                         letters_data,
@@ -1353,25 +1412,32 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                         save=lambda key, subject, body, bid=brief["id"]: api_save_letter(bid, key, subject, body),
                         approve=lambda key, bid=brief["id"]: api_approve_letter(bid, key),
                     )
-                with tab_operations:
+                if section == "Launch operations":
                     render_operations(
                         brief,
                         get_plan=lambda factor, caseload, bid=brief["id"]: api_get_operations(bid, factor, caseload),
                         compliance=api_get_compliance(brief["id"]),
                         save_state=lambda state, fields, bid=brief["id"]: api_save_compliance_state(bid, state, fields),
                     )
-                with tab_gate:
-                    render_launch_gate(
-                        brief,
-                        api_get_launch_gate(brief["id"]),
-                        sign=lambda function, fields, bid=brief["id"]: api_sign_launch_gate(bid, function, fields),
-                        withdraw=lambda function, bid=brief["id"]: api_withdraw_signoff(bid, function),
-                    )
+
+            # ---------------------------------------------------------------
+            # LAUNCH GATE (both workspaces; each role signs only its own functions, as backend/auth.py enforces)
+            # ---------------------------------------------------------------
+            if section == "Launch gate":
+                render_launch_gate(
+                    brief,
+                    api_get_launch_gate(brief["id"]),
+                    sign=lambda function, fields, bid=brief["id"]: api_sign_launch_gate(bid, function, fields),
+                    withdraw=lambda function, bid=brief["id"]: api_withdraw_signoff(bid, function),
+                    can_sign=lambda function: (function == "actuarial") == is_actuarial_view,
+                )
+            if section == "Rate indication":
+                render_pricing(brief, lambda overrides, bid=brief["id"]: api_get_pricing(bid, overrides))
 
             # ---------------------------------------------------------------
             # TAB 5: LIVE WEB RESEARCH (Formatted Sub-Tabs & Right-Side Reader)
             # ---------------------------------------------------------------
-            with tab_external:
+            if section == "Live web research":
                 st.markdown("### Live External Market & Web Intelligence")
                 st.caption("Categorized external discovery across news articles, industry blogs, government safety/regulatory datasets, actuarial research papers, and competitor filings.")
 
