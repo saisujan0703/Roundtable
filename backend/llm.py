@@ -20,6 +20,7 @@ from __future__ import annotations
 from datetime import datetime
 import json
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -145,15 +146,18 @@ def resolve_risk_tag_with_confidence(
             return clean_tag, 1.0
 
     title_clean = title.strip().lower()
-    title_words = set(title_clean.replace("-", " ").replace("_", " ").split())
+    title_spaced = title_clean.replace("-", " ").replace("_", " ")
+    title_words = set(title_spaced.split())
 
     best_tag: Optional[str] = None
     best_score: float = 0.0
 
     for tag, keywords in TAG_SEMANTIC_MAP.items():
-        tag_normalized = tag.replace("_", " ")
-        # 1. Exact tag name or normalized tag in title
-        if tag in title_clean or tag_normalized in title_clean:
+        # 1. Tag name as a whole word: plural / past / '-storm' endings count ('hails', 'strained', 'hailstorm'),
+        #    other words that merely contain it do not ('ride-hailing', 'windshield', 'moldings')
+        names = {tag, tag.replace("_", " ")}
+        if any(re.search(rf"\b{re.escape(name)}(?:s|es|ed|storms?)?\b", title_spaced) for name in names) or \
+                any(n.endswith("y") and re.search(rf"\b{re.escape(n[:-1])}ies\b", title_spaced) for n in names):
             score = 0.92
             if score > best_score:
                 best_score = score
@@ -164,7 +168,7 @@ def resolve_risk_tag_with_confidence(
             kw_lower = kw.lower()
             if kw_lower in title_clean:
                 if len(kw_lower.split()) > 1:
-                    kw_score = 0.82  # multi-word phrase match
+                    kw_score = 0.94  # multi-word phrase: more specific than a bare tag name ('vehicle hail' > 'hail')
                 elif kw_lower in title_words:
                     kw_score = 0.72  # exact word token match
                 elif len(kw_lower) >= 5:
