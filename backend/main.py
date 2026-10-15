@@ -33,6 +33,17 @@ from backend import operations as launch_operations
 from backend import policy_form
 from backend import workflow as idea_workflow
 from backend import coverage as covered_claims
+from backend import actuarial
+from backend import actuarial_memo
+from backend import actuarial_settings
+from backend import filing_research
+from backend import monitoring
+from backend import parametric
+from backend import rating_tests
+from backend import analytics as claims_analytics
+from backend import business_plan
+from backend import rating_plan
+from backend import reserving
 
 app = FastAPI(
     title="Roundtable Decision Support API",
@@ -78,7 +89,8 @@ def init_db() -> None:
                          ("readiness_json", "TEXT"), ("guideline_json", "TEXT"),
                          ("scenarios_json", "TEXT"), ("letters_json", "TEXT"), ("compliance_json", "TEXT"),
                          ("launch_json", "TEXT"), ("policy_form_json", "TEXT"),
-                         ("workflow_json", "TEXT"), ("coverage_overrides_json", "TEXT")):
+                         ("workflow_json", "TEXT"), ("coverage_overrides_json", "TEXT"),
+                         ("actuarial_json", "TEXT")):
             if col not in existing:
                 conn.execute(f"ALTER TABLE briefs ADD COLUMN {col} {ddl}")
         # Briefs created before tracking existed: their current text becomes the baseline
@@ -89,6 +101,7 @@ def init_db() -> None:
 # Ensure tables are ready at import time
 init_db()
 auth.init_auth_tables()
+actuarial_settings.init_table()
 market_radar.init_radar_tables()
 
 # Paths reachable without a session: sign-in itself, health, and the API docs
@@ -927,7 +940,8 @@ def _gate_row(conn, brief_id: int):
     return ({"claims_status": row["claims_status"], "guideline": load("guideline_json"),
              "readiness": load("readiness_json"), "scenarios": load("scenarios_json"),
              "letters": load("letters_json"), "compliance": load("compliance_json"),
-             "workflow": load("workflow_json"), "enforce_workflow": ENFORCE_IDEA_WORKFLOW}, load("launch_json"))
+             "workflow": load("workflow_json"), "enforce_workflow": ENFORCE_IDEA_WORKFLOW,
+             **_actuarial_gate(conn, brief_id)}, load("launch_json"))
 
 
 @app.get("/api/briefs/{brief_id}/launch-gate")
@@ -1142,25 +1156,286 @@ def get_covered_claims(brief_id: int):
         return {"brief_id": brief_id, **_covered_claims(conn, brief_id), "groups": covered_claims.GROUPS}
 
 
+# ---------------------------------------------------------------------------
+# Actuarial: rate indication, loss development, rating plan, business plan, memorandum, approval
+# ---------------------------------------------------------------------------
+def _actuarial_state(conn, brief_id: int) -> dict:
+    row = conn.execute("SELECT actuarial_json FROM briefs WHERE id = ?", (brief_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Brief #{brief_id} not found")
+    return actuarial.load(row["actuarial_json"])
+
+
+def _save_actuarial(conn, brief_id: int, state: dict) -> None:
+    conn.execute("UPDATE briefs SET actuarial_json = ? WHERE id = ?", (json.dumps(state), brief_id))
+    conn.commit()
+
+
+def _indication(conn, brief_id: int, overrides: Optional[dict] = None) -> dict:
+    """Everything the actuarial sections compute from: {brief, title, state, key, indication, development}. The
+    saved assumptions apply first, then *overrides* (what-if values from the UI, not stored)."""
+    row = conn.execute("SELECT title, brief_json FROM briefs WHERE id = ?", (brief_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Brief #{brief_id} not found")
+    brief = json.loads(row["brief_json"]) if row["brief_json"] else {"title": row["title"]}
+    state = _actuarial_state(conn, brief_id)
+    covered = _covered_claims(conn, brief_id)
+    settings = actuarial_settings.load()
+    company = actuarial_settings.pricing_defaults(settings)
+    merged = {**company, **state["assumptions"], **(overrides or {})}
+    basis = launch_operations.resolve_basis(brief)
+    key = basis.get("key") if basis["basis"] in ("direct", "proxy") else None
+    dev, comp = {}, {}
+    if key:
+        cap = pricing._clamp("large_loss_cap", float(merged.get("large_loss_cap") or pricing.DEFAULTS["large_loss_cap"]))
+        dev = reserving.development(key, merged.get("tail_factor") or 1.0)
+        comp = claims_analytics.get_loss_composition(key, cap)
+    ind = pricing.rate_indication(brief.get("claims_analytics") or {}, merged, covered,
+                                  {"development": dev, "composition": comp, "benchmarks": state["benchmarks"]})
+    defaults = pricing.assumptions(brief.get("claims_analytics") or {}, company, comp)
+    return {"brief": brief, "title": row["title"], "state": state, "key": key, "indication": ind, "development": dev,
+            "covered": covered, "settings": settings, "defaults": defaults,
+            "provenance": actuarial_settings.provenance(settings)}
+
+
+def _actuarial_gate(conn, brief_id: int) -> dict:
+    """The launch gate's actuarial inputs: approval status of the indication and the rating-test summary."""
+    state = _actuarial_state(conn, brief_id)
+    if not state.get("approval") and not state.get("rating_tests"):
+        return {"actuarial": actuarial.status(state, None), "rating_tests": rating_tests.summarize(None, None)}
+    ctx = _indication(conn, brief_id)
+    plan = _rating_plan(ctx) if state.get("rating_tests") else None
+    return {"actuarial": actuarial.status(state, ctx["indication"]),
+            "rating_tests": rating_tests.summarize(state.get("rating_tests"), plan)}
+
+
+def _eligible_exposure(key: Optional[str]) -> float:
+    """The scope's latest full-year earned exposure: today's book that could buy the cover."""
+    if not key:
+        return 0.0
+    _, _, _, be = claims_analytics._scope_frames(key)
+    val_year = claims_analytics._data()["valuation"].year
+    by_year = be[be["calendar_year"] < val_year].groupby("calendar_year")["earned_exposure"].sum()
+    return float(by_year.iloc[-1]) if len(by_year) else 0.0
+
+
+def _rating_plan(ctx: dict) -> dict:
+    ind = ctx["indication"]
+    if not ind.get("available") or not ctx["key"]:
+        return {"available": False, "reason": ind.get("reason", "No risk pattern to rate on.")}
+    a = ind["assumptions"]
+    return rating_plan.build(ctx["key"], actuarial.selected_rate(ctx["state"], ind), a["experience_years"],
+                             a["large_loss_cap"], ind["priced_claims"])
+
+
+def _business_plan(ctx: dict, values: Optional[dict] = None) -> dict:
+    ind = ctx["indication"]
+    if not ind.get("available"):
+        return {"available": False, "reason": ind.get("reason")}
+    return business_plan.build(ind, _eligible_exposure(ctx["key"]), actuarial.selected_rate(ctx["state"], ind),
+                               {**actuarial_settings.business_plan_defaults(ctx["settings"]),
+                                **ctx["state"].get("business_plan", {}), **(values or {})})
+
+
 @app.get("/api/briefs/{brief_id}/pricing")
 def get_rate_indication(brief_id: int, experience_years: Optional[int] = None, months_to_effective: Optional[int] = None,
                         frequency_trend_pct: Optional[float] = None, severity_trend_pct: Optional[float] = None,
                         ulae_pct: Optional[float] = None, expense_ratio_pct: Optional[float] = None,
-                        profit_pct: Optional[float] = None, apply_development: Optional[bool] = None):
-    """Directional rate indication for the new coverage (backend.pricing): the newly covered claims' loss cost,
-    trended and loaded. Query parameters override the default assumptions; nothing is stored."""
-    with get_connection() as conn:
-        row = conn.execute("SELECT brief_json FROM briefs WHERE id = ?", (brief_id,)).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail=f"Brief #{brief_id} not found")
-        brief = json.loads(row["brief_json"]) if row["brief_json"] else {}
-        covered = _covered_claims(conn, brief_id)
+                        profit_pct: Optional[float] = None, apply_development: Optional[bool] = None,
+                        dev_method: Optional[str] = None, tail_factor: Optional[float] = None,
+                        large_loss_cap: Optional[float] = None, cat_load_pct: Optional[float] = None,
+                        unreported_load_pct: Optional[float] = None, adverse_selection_pct: Optional[float] = None,
+                        apply_complement: Optional[bool] = None, price_whole_pattern: Optional[bool] = None):
+    """Rate indication for the new coverage (backend.pricing) with the actuary's saved assumptions. Query parameters
+    are what-if overrides on top of them and are not stored. Includes the benchmarks and the approval status."""
     overrides = {k: v for k, v in dict(
         experience_years=experience_years, months_to_effective=months_to_effective,
         frequency_trend_pct=frequency_trend_pct, severity_trend_pct=severity_trend_pct, ulae_pct=ulae_pct,
-        expense_ratio_pct=expense_ratio_pct, profit_pct=profit_pct, apply_development=apply_development).items()
-        if v is not None}
-    return {"brief_id": brief_id, **pricing.rate_indication(brief.get("claims_analytics") or {}, overrides, covered)}
+        expense_ratio_pct=expense_ratio_pct, profit_pct=profit_pct, apply_development=apply_development,
+        dev_method=dev_method, tail_factor=tail_factor, large_loss_cap=large_loss_cap, cat_load_pct=cat_load_pct,
+        unreported_load_pct=unreported_load_pct, adverse_selection_pct=adverse_selection_pct,
+        apply_complement=apply_complement, price_whole_pattern=price_whole_pattern).items() if v is not None}
+    with get_connection() as conn:
+        ctx = _indication(conn, brief_id, overrides)
+        saved = _indication(conn, brief_id)["indication"] if overrides else ctx["indication"]
+    state = ctx["state"]
+    return {"brief_id": brief_id, **ctx["indication"], "saved_assumptions": state["assumptions"],
+            "defaults": ctx["defaults"], "provenance": ctx["provenance"],
+            "what_if": bool(overrides), "benchmarks": state["benchmarks"],
+            "benchmark_types": pricing.BENCHMARK_TYPES, "approval_status": actuarial.status(state, saved)}
+
+
+class AssumptionsRequest(BaseModel):
+    assumptions: Dict[str, Any] = Field(..., description="backend.pricing.DEFAULTS keys; {} resets to the defaults.")
+
+
+@app.put("/api/briefs/{brief_id}/actuarial/assumptions")
+def save_actuarial_assumptions(brief_id: int, req: AssumptionsRequest):
+    """The actuary's selected assumptions; every actuarial section is computed with them from now on."""
+    with get_connection() as conn:
+        state = _actuarial_state(conn, brief_id)
+        try:
+            actuarial.save_assumptions(state, req.assumptions)
+        except (TypeError, ValueError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        _save_actuarial(conn, brief_id, state)
+    return {"brief_id": brief_id, "assumptions": state["assumptions"]}
+
+
+class BenchmarkRequest(BaseModel):
+    kind: str = Field(..., description="loss_cost | premium")
+    source: str = Field(..., min_length=1, max_length=200)
+    value: float = Field(..., gt=0)
+    as_of: str = Field(..., description="YYYY-MM-DD the value applies to")
+    permissible_loss_ratio_pct: Optional[float] = None
+    unit: str = Field("", max_length=80)
+    url: str = Field("", max_length=500)
+    note: str = Field("", max_length=1000)
+
+
+@app.post("/api/briefs/{brief_id}/actuarial/benchmarks")
+def add_actuarial_benchmark(brief_id: int, req: BenchmarkRequest, request: Request):
+    """Record one external benchmark (bureau loss cost, competitor filed rate, reinsurer quote) for the complement."""
+    with get_connection() as conn:
+        state = _actuarial_state(conn, brief_id)
+        try:
+            actuarial.add_benchmark(state, req.model_dump(), request.state.user.get("name", ""))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        _save_actuarial(conn, brief_id, state)
+    return {"brief_id": brief_id, "benchmarks": state["benchmarks"]}
+
+
+class BenchmarkIncludeRequest(BaseModel):
+    include: bool
+
+
+@app.put("/api/briefs/{brief_id}/actuarial/benchmarks/{benchmark_id}")
+def include_actuarial_benchmark(brief_id: int, benchmark_id: str, req: BenchmarkIncludeRequest):
+    with get_connection() as conn:
+        state = _actuarial_state(conn, brief_id)
+        try:
+            actuarial.set_benchmark_included(state, benchmark_id, req.include)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Benchmark not found.")
+        _save_actuarial(conn, brief_id, state)
+    return {"brief_id": brief_id, "benchmarks": state["benchmarks"]}
+
+
+@app.delete("/api/briefs/{brief_id}/actuarial/benchmarks/{benchmark_id}")
+def remove_actuarial_benchmark(brief_id: int, benchmark_id: str):
+    with get_connection() as conn:
+        state = _actuarial_state(conn, brief_id)
+        try:
+            actuarial.remove_benchmark(state, benchmark_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Benchmark not found.")
+        _save_actuarial(conn, brief_id, state)
+    return {"brief_id": brief_id, "benchmarks": state["benchmarks"]}
+
+
+class IndicationApprovalRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    note: str = Field("", max_length=2000)
+    selected_premium: Optional[float] = Field(None, gt=0, description="Selected rate; defaults to the indication.")
+
+
+@app.put("/api/briefs/{brief_id}/actuarial/approval")
+def approve_indication(brief_id: int, req: IndicationApprovalRequest):
+    """The Lead Actuary approves the indication (with the saved assumptions) and selects the rate."""
+    with get_connection() as conn:
+        ctx = _indication(conn, brief_id)
+        try:
+            actuarial.approve(ctx["state"], ctx["indication"], req.name, req.note, req.selected_premium)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        _save_actuarial(conn, brief_id, ctx["state"])
+    return {"brief_id": brief_id, **actuarial.status(ctx["state"], ctx["indication"])}
+
+
+@app.delete("/api/briefs/{brief_id}/actuarial/approval")
+def withdraw_indication_approval(brief_id: int):
+    with get_connection() as conn:
+        state = _actuarial_state(conn, brief_id)
+        state["approval"] = None
+        _save_actuarial(conn, brief_id, state)
+    return {"brief_id": brief_id, **actuarial.status(state, None)}
+
+
+@app.get("/api/briefs/{brief_id}/loss-development")
+def get_loss_development(brief_id: int):
+    """Reconstructed reported-count and incurred triangles, chain-ladder and BF ultimates (backend.reserving),
+    with the saved tail factor."""
+    with get_connection() as conn:
+        ctx = _indication(conn, brief_id)
+    if not ctx["key"]:
+        return {"brief_id": brief_id, "has_data": False,
+                "reason": "Loss development needs a risk pattern (direct or proxy) to stand on."}
+    return {"brief_id": brief_id, **ctx["development"]}
+
+
+@app.get("/api/briefs/{brief_id}/rating-plan")
+def get_rating_plan(brief_id: int):
+    """Base rate and relativities balanced to the selected rate (backend.rating_plan)."""
+    with get_connection() as conn:
+        ctx = _indication(conn, brief_id)
+    return {"brief_id": brief_id, **_rating_plan(ctx)}
+
+
+@app.get("/api/briefs/{brief_id}/business-plan")
+def get_business_plan(brief_id: int, take_up_pct: Optional[float] = None, growth_pct: Optional[float] = None,
+                      years: Optional[int] = None, launch_cost: Optional[float] = None,
+                      fixed_expense_per_year: Optional[float] = None, quota_share_pct: Optional[float] = None,
+                      ceding_commission_pct: Optional[float] = None, premium_to_surplus: Optional[float] = None,
+                      investment_yield_pct: Optional[float] = None, loss_payout_years: Optional[float] = None,
+                      tax_rate_pct: Optional[float] = None, rate: Optional[float] = None,
+                      annual_rate_change_pct: Optional[float] = None):
+    """Three-year projection at the selected rate (backend.business_plan); query parameters are what-ifs on top of
+    the saved inputs."""
+    values = {k: v for k, v in dict(
+        take_up_pct=take_up_pct, growth_pct=growth_pct, years=years, launch_cost=launch_cost,
+        fixed_expense_per_year=fixed_expense_per_year, quota_share_pct=quota_share_pct,
+        ceding_commission_pct=ceding_commission_pct, premium_to_surplus=premium_to_surplus,
+        investment_yield_pct=investment_yield_pct, loss_payout_years=loss_payout_years, tax_rate_pct=tax_rate_pct,
+        rate=rate, annual_rate_change_pct=annual_rate_change_pct).items() if v is not None}
+    with get_connection() as conn:
+        ctx = _indication(conn, brief_id)
+    return {"brief_id": brief_id, **_business_plan(ctx, values), "saved_inputs": ctx["state"].get("business_plan", {})}
+
+
+class BusinessPlanRequest(BaseModel):
+    inputs: Dict[str, Any] = Field(..., description="backend.business_plan.DEFAULTS keys; {} resets to the defaults.")
+
+
+@app.put("/api/briefs/{brief_id}/actuarial/business-plan")
+def save_business_plan(brief_id: int, req: BusinessPlanRequest):
+    with get_connection() as conn:
+        state = _actuarial_state(conn, brief_id)
+        try:
+            clean = business_plan.inputs(req.inputs)
+        except (TypeError, ValueError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        state["business_plan"] = {k: clean[k] for k, v in req.inputs.items() if k in clean and v is not None}
+        _save_actuarial(conn, brief_id, state)
+    return {"brief_id": brief_id, "inputs": state["business_plan"]}
+
+
+@app.get("/api/briefs/{brief_id}/actuarial-memo")
+def get_actuarial_memo(brief_id: int):
+    """Draft actuarial memorandum and exhibits for the rate filing (backend.actuarial_memo)."""
+    with get_connection() as conn:
+        ctx = _indication(conn, brief_id)
+        comp = conn.execute("SELECT compliance_json FROM briefs WHERE id = ?", (brief_id,)).fetchone()["compliance_json"]
+    matrix = json.loads(comp) if comp else {}
+    states = [r["state"] for r in matrix.get("states", []) if r.get("launch")] or None
+    status = actuarial.status(ctx["state"], ctx["indication"])
+    plan = _rating_plan(ctx)
+    extras = {"provenance": ctx["provenance"],
+              "rating_tests": rating_tests.summarize(ctx["state"].get("rating_tests"), plan),
+              "monitoring": _monitoring(ctx), "parametric": _parametric(ctx) if ctx["state"].get("parametric") else None}
+    memo = actuarial_memo.build(ctx["title"], ctx["indication"], ctx["development"], plan,
+                                _business_plan(ctx), ctx["state"], status, states, extras)
+    return {"brief_id": brief_id, **memo}
 
 
 @app.put("/api/briefs/{brief_id}/covered-claims/override")
@@ -1238,3 +1513,197 @@ def brief_from_market_signal(topic_id: str):
                                              idea_context=context))
     market_radar.set_status(topic_id, "briefed", record.id)
     return record
+
+
+# ---------------------------------------------------------------------------
+# Company actuarial settings (replace the placeholder defaults, with cited sources)
+# ---------------------------------------------------------------------------
+class ActuarialSettingsRequest(BaseModel):
+    values: Dict[str, Optional[float]]
+    sources: Dict[str, str] = Field(default_factory=dict)
+
+
+@app.get("/api/actuarial/settings")
+def get_actuarial_settings():
+    s = actuarial_settings.load()
+    return {**s, "fields": {k: {"label": v[0], "default": v[1], "min": v[2], "max": v[3]}
+                            for k, v in actuarial_settings.FIELDS.items()},
+            "derived": {"expense_ratio_pct": round(actuarial_settings.expense_ratio_pct(s), 2),
+                        "profit_pct": actuarial_settings.profit_pct(s)}}
+
+
+@app.put("/api/actuarial/settings")
+def save_actuarial_settings(req: ActuarialSettingsRequest, request: Request):
+    """The Lead Actuary sets company-level assumptions; each needs its source cited."""
+    try:
+        actuarial_settings.save(req.values, req.sources, request.state.user.get("name", ""))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return get_actuarial_settings()
+
+
+# ---------------------------------------------------------------------------
+# PolicyCenter rating tests
+# ---------------------------------------------------------------------------
+def _rating_tests_response(brief_id: int, state: dict, plan: dict) -> dict:
+    tests = state.get("rating_tests")
+    return {"brief_id": brief_id, "tests": tests, "csv": rating_tests.to_csv(tests) if tests else None,
+            "summary": rating_tests.summarize(tests, plan), "statuses": rating_tests.STATUSES}
+
+
+@app.get("/api/briefs/{brief_id}/rating-tests")
+def get_rating_tests(brief_id: int):
+    with get_connection() as conn:
+        ctx = _indication(conn, brief_id)
+    return _rating_tests_response(brief_id, ctx["state"], _rating_plan(ctx))
+
+
+@app.post("/api/briefs/{brief_id}/actuarial/rating-tests")
+def generate_rating_tests(brief_id: int):
+    """(Re)generate the PolicyCenter rating test cases from the current rating plan; earlier results are dropped."""
+    with get_connection() as conn:
+        ctx = _indication(conn, brief_id)
+        plan = _rating_plan(ctx)
+        try:
+            ctx["state"]["rating_tests"] = rating_tests.generate(plan)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        _save_actuarial(conn, brief_id, ctx["state"])
+    return _rating_tests_response(brief_id, ctx["state"], plan)
+
+
+class RatingTestResultRequest(BaseModel):
+    actual_premium: Optional[float] = None
+    status: Optional[str] = Field(None, description="Blocked | Not run (when no premium is given)")
+    tester: str = Field(..., min_length=1, max_length=120)
+    note: str = Field("", max_length=1000)
+
+
+@app.put("/api/briefs/{brief_id}/actuarial/rating-tests/{case_id}")
+def record_rating_test(brief_id: int, case_id: str, req: RatingTestResultRequest):
+    """Record the premium PolicyCenter produced for one case (pass / fail is computed) or mark it Blocked."""
+    with get_connection() as conn:
+        state = _actuarial_state(conn, brief_id)
+        if not state.get("rating_tests"):
+            raise HTTPException(status_code=404, detail="Generate the rating tests first.")
+        try:
+            rating_tests.record(state["rating_tests"], case_id, req.actual_premium, req.status, req.tester, req.note)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        _save_actuarial(conn, brief_id, state)
+        ctx = _indication(conn, brief_id)
+    return _rating_tests_response(brief_id, state, _rating_plan(ctx))
+
+
+@app.get("/api/briefs/{brief_id}/rating-tests.csv")
+def export_rating_tests(brief_id: int):
+    from fastapi.responses import PlainTextResponse
+    with get_connection() as conn:
+        state = _actuarial_state(conn, brief_id)
+    if not state.get("rating_tests"):
+        raise HTTPException(status_code=404, detail="Generate the rating tests first.")
+    return PlainTextResponse(rating_tests.to_csv(state["rating_tests"]), media_type="text/csv")
+
+
+# ---------------------------------------------------------------------------
+# Actual vs expected monitoring
+# ---------------------------------------------------------------------------
+def _monitoring(ctx: dict) -> dict:
+    ind = ctx["indication"]
+    if not ind.get("available") or not ctx["key"]:
+        return {"available": False, "reason": ind.get("reason", "No risk pattern to monitor.")}
+    return monitoring.build(ind, ctx["key"], ctx["covered"], ctx["development"],
+                            actuarial.selected_rate(ctx["state"], ind))
+
+
+@app.get("/api/briefs/{brief_id}/monitoring")
+def get_monitoring(brief_id: int):
+    """Actual vs expected against the indication (a hold-out backtest before launch), and the monitoring plan."""
+    with get_connection() as conn:
+        ctx = _indication(conn, brief_id)
+    return {"brief_id": brief_id, **_monitoring(ctx)}
+
+
+# ---------------------------------------------------------------------------
+# Parametric pricing
+# ---------------------------------------------------------------------------
+def _parametric(ctx: dict, config: Optional[dict] = None) -> dict:
+    a = ctx["indication"].get("assumptions") or ctx["defaults"]
+    return parametric.build(ctx["key"], {**ctx["state"].get("parametric", {}), **(config or {})},
+                            a["expense_ratio_pct"], a["profit_pct"])
+
+
+@app.get("/api/briefs/{brief_id}/parametric")
+def get_parametric(brief_id: int, trigger_index: Optional[float] = None, payout: Optional[float] = None,
+                   material_loss_index: Optional[float] = None):
+    """Parametric price for the brief's perils: burn on company CAT events blended with hazard probabilities."""
+    what_if = {k: v for k, v in dict(trigger_index=trigger_index, payout=payout,
+                                     material_loss_index=material_loss_index).items() if v is not None}
+    with get_connection() as conn:
+        ctx = _indication(conn, brief_id)
+    return {"brief_id": brief_id, **_parametric(ctx, what_if), "what_if": bool(what_if),
+            "saved_config": ctx["state"].get("parametric", {})}
+
+
+class ParametricRequest(BaseModel):
+    config: Dict[str, Any]
+
+
+@app.put("/api/briefs/{brief_id}/actuarial/parametric")
+def save_parametric(brief_id: int, req: ParametricRequest):
+    with get_connection() as conn:
+        state = _actuarial_state(conn, brief_id)
+        try:
+            state["parametric"] = parametric.validate_config(req.config)
+        except (TypeError, ValueError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        _save_actuarial(conn, brief_id, state)
+    return {"brief_id": brief_id, "config": state["parametric"]}
+
+
+# ---------------------------------------------------------------------------
+# External rate data: bureau CSV import and competitor filing leads
+# ---------------------------------------------------------------------------
+def _launch_states(conn, brief_id: int) -> List[str]:
+    comp = conn.execute("SELECT compliance_json FROM briefs WHERE id = ?", (brief_id,)).fetchone()["compliance_json"]
+    matrix = json.loads(comp) if comp else {}
+    return [r["state"] for r in matrix.get("states", []) if r.get("launch")]
+
+
+@app.post("/api/briefs/{brief_id}/actuarial/benchmarks/import")
+async def import_benchmarks(brief_id: int, request: Request, file: UploadFile = File(...)):
+    """Import a bureau / vendor loss-cost CSV as benchmarks (rows outside the launch states are skipped)."""
+    raw = await file.read()
+    if len(raw) > 2_000_000:
+        raise HTTPException(status_code=413, detail="File too large (2 MB max).")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
+    with get_connection() as conn:
+        state = _actuarial_state(conn, brief_id)
+        try:
+            result = filing_research.import_csv(state, text, request.state.user.get("name", ""),
+                                                _launch_states(conn, brief_id))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        _save_actuarial(conn, brief_id, state)
+    return {"brief_id": brief_id, **result, "benchmarks": state["benchmarks"]}
+
+
+@app.get("/api/briefs/{brief_id}/filing-leads")
+def get_filing_leads(brief_id: int):
+    """SERFF Filing Access links for the launch states and web results for comparable rate filings."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT title, brief_json FROM briefs WHERE id = ?", (brief_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Brief #{brief_id} not found")
+        states = _launch_states(conn, brief_id)
+    brief = json.loads(row["brief_json"]) if row["brief_json"] else {}
+    scope = (brief.get("claims_analytics") or {}).get("scope") or {}
+    if not states:  # no launch states chosen yet: the product's ten largest states by exposure
+        frames = launch_operations._frames(launch_operations.resolve_basis(brief))
+        states = [r["state"] for r in launch_operations.state_footprint(frames[0], frames[2])[:10]] if frames else []
+    return {"brief_id": brief_id, **filing_research.filing_leads(row["title"], scope.get("description", ""), states)}

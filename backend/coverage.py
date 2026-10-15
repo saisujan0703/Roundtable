@@ -133,6 +133,10 @@ def build(brief: Dict[str, Any], form: Optional[Dict[str, Any]] = None,
             "estimate_sources": new["est_source"].value_counts().to_dict(),
             "exposure_unit": analytics.get_tag_scope(basis["key"])["exposure_unit"],
             "by_year": by_year,
+            # One [accident year, estimated cost, catastrophe?, loss date] per claim, for the CAT / large-loss split
+            # in pricing and actual-vs-expected monitoring
+            "items": [[int(r.ay), _r(r.est_cost, 2) or 0.0, bool(isinstance(r.cat_code, str) and r.cat_code),
+                       r.loss_date.strftime("%Y-%m-%d")] for r in new.itertuples()],
         },
         "rows": [{"group": r.group, "group_label": GROUPS[r.group], "detail": r.detail, "description": r.loss_description,
                   "claims": int(r.claims), "estimated_cost": _r(r.estimated_cost, 0) if r.group != "not_payable" else None,

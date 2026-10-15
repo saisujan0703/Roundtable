@@ -509,6 +509,57 @@ def get_cycle_time_and_reserve_development(tag_value: str) -> dict:
                        f"(baseline {rd['baseline_incurred_to_initial_ratio']:.2f}x) -> {rd['direction']} development.")}
 
 
+def get_loss_composition(tag_value: str, cap: float = LARGE_LOSS_THRESHOLD) -> dict:
+    """What the rate indication needs to price catastrophes and large losses separately.
+
+    by_year     each accident year's incurred split into catastrophe and non-catastrophe, with non-CAT losses
+                capped at *cap* per claim (the part the experience prices directly)
+    excess      long-run excess factor = non-CAT incurred / non-CAT incurred capped, over every accident year.
+                From the pattern when it has at least 10 claims above the cap, else from the whole scope
+                (same lines), because a handful of large losses cannot set a load
+    cat         long-run CAT-to-non-CAT incurred ratio of the pattern over every accident year
+    """
+    _, tc, bc, _ = _scope_frames(tag_value)
+    if tc.empty:
+        return {"has_data": False}
+    cap = float(cap)
+
+    def split(df):
+        x = df["claim_amount"].fillna(0.0).clip(lower=0)
+        cat = df["cat_code"].notna()
+        return x, cat
+
+    x, cat = split(tc)
+    tc = tc.assign(_x=x, _cat=cat, _capped=x.clip(upper=cap))
+    by_year = []
+    for ay, g in tc.groupby("ay"):
+        nc = g[~g["_cat"]]
+        by_year.append({"year": int(ay), "incurred": _r(g["_x"].sum()), "cat_incurred": _r(g.loc[g["_cat"], "_x"].sum()),
+                        "noncat_incurred": _r(nc["_x"].sum()), "noncat_capped": _r(nc["_capped"].sum()),
+                        "cat_claims": int(g["_cat"].sum()), "large_losses": int((nc["_x"] > cap).sum())})
+    nc = tc[~tc["_cat"]]
+    large = int((nc["_x"] > cap).sum())
+    if large >= 10:
+        excess_src, num, den = "pattern", nc["_x"].sum(), nc["_capped"].sum()
+    else:
+        bx, bcat = split(bc)
+        bnc = bx[~bcat]
+        excess_src, num, den = "scope", bnc.sum(), bnc.clip(upper=cap).sum()
+    cat_total, noncat_total = float(tc.loc[tc["_cat"], "_x"].sum()), float(nc["_x"].sum())
+    total = cat_total + noncat_total
+    return {
+        "has_data": True, "cap": cap, "by_year": by_year,
+        "excess": {"factor": _r(num / den, 4) if den else 1.0, "source": excess_src,
+                   "pattern_large_losses": large,
+                   "share_above_cap_pct": _r(100 * (1 - den / num), 2) if num else 0.0},
+        "cat": {"cat_incurred": _r(cat_total), "noncat_incurred": _r(noncat_total),
+                "cat_share_pct": _r(100 * cat_total / total, 2) if total else 0.0,
+                "ratio_to_noncat": _r(cat_total / noncat_total, 4) if noncat_total else None,
+                "cat_claims": int(tc["_cat"].sum()),
+                "years": f"{int(tc['ay'].min())}-{int(tc['ay'].max())}"},
+    }
+
+
 def _credible_trend_rows(tag_value: str) -> list[dict]:
     return [r for r in get_frequency_severity_trend(tag_value) if r["claims"] >= 10]
 

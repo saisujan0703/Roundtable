@@ -152,6 +152,8 @@ _BRIEF_PATH = re.compile(r"^/api/briefs/\d+/(?P<rest>.+)$")
 def required_role(method: str, path: str) -> Optional[str]:
     if method in ("GET", "HEAD", "OPTIONS"):
         return None
+    if path == "/api/actuarial/settings":
+        return LEAD_ACTUARY
     m = _BRIEF_PATH.match(path)
     if not m:
         return None  # creating briefs, idea assistant, voice input: any signed-in role
@@ -160,6 +162,8 @@ def required_role(method: str, path: str) -> Optional[str]:
         return None
     if rest.startswith("workflow/review/"):
         return LEAD_ACTUARY if rest.endswith("/actuarial") else CLAIMS_LEAD
+    if rest.startswith("actuarial/"):
+        return LEAD_ACTUARY
     if rest.startswith("launch-gate/"):
         return LEAD_ACTUARY if rest == "launch-gate/actuarial" else CLAIMS_LEAD
     # Claims findings, notes, readiness, guideline, scenarios, letters, compliance, policy form, coverage

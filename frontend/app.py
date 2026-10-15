@@ -30,6 +30,9 @@ from launch_gate_panel import render_launch_gate
 from policy_form_panel import render_policy_form
 from coverage_panel import render_covered_claims
 from pricing_panel import render_pricing
+from actuarial_panels import (render_actuarial_memo, render_business_plan, render_loss_development,
+                               render_rating_plan)
+from actuarial_ops_panels import render_company_settings, render_monitoring, render_parametric, render_rating_tests
 from radar_panel import render_radar
 from verification_badge import chip_html, render_verification
 from home_page import money_short, portfolio_stats, render_home, sculpture_svg
@@ -191,6 +194,19 @@ def _radar_call(method: str, path: str, timeout: int = 10, **kw) -> Optional[Dic
     return None
 
 
+def _api_call(method: str, path: str, timeout: int = 30, **kw) -> Optional[Dict[str, Any]]:
+    """Any /api/{path} call (not brief-scoped), with the same error reporting as the brief calls."""
+    try:
+        r = api.request(method, f"{API_BASE_URL}/{path}", timeout=timeout, **kw)
+        if r.status_code == 200:
+            return r.json()
+        detail = r.json().get("detail", r.text) if r.headers.get("content-type", "").startswith("application/json") else r.text
+        st.error(f"Request failed ({r.status_code}): {detail}")
+    except Exception as e:
+        st.error(f"Connection error to backend: {e}")
+    return None
+
+
 TAG_AUTO = "(Optional) Auto-detect from title"
 
 _CONFLICT_ICON = {"high": "🔴", "medium": "🟠", "low": "🟡"}
@@ -209,7 +225,11 @@ STAT_ICONS = {
 # Sidebar brief sections: Material icon per section
 SECTION_ICONS = {
     "Claims review": ":material/query_stats:", "Actuarial review": ":material/functions:",
-    "Rate indication": ":material/price_check:",
+    "Rate indication": ":material/price_check:", "Loss development": ":material/stacked_line_chart:",
+    "Rating plan": ":material/table_chart:", "Business plan": ":material/account_balance:",
+    "Actuarial memo": ":material/article:", "Rating tests": ":material/fact_check:",
+    "Monitoring": ":material/monitor_heart:", "Parametric": ":material/thunderstorm:",
+    "Company assumptions": ":material/tune:",
     "Claims readiness": ":material/task_alt:", "Policy wording": ":material/description:",
     "Handling guideline": ":material/menu_book:", "Test scenarios": ":material/science:",
     "Customer letters": ":material/mail:", "Launch operations": ":material/rocket_launch:",
@@ -407,11 +427,6 @@ def api_sign_launch_gate(brief_id: int, function: str, fields: Dict[str, str]) -
 
 def api_withdraw_signoff(brief_id: int, function: str) -> bool:
     return _guideline_call("DELETE", f"{brief_id}/launch-gate/{function}") is not None
-
-
-def api_get_pricing(brief_id: int, overrides: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    params = {k: (str(v).lower() if isinstance(v, bool) else v) for k, v in overrides.items()}
-    return _guideline_call("GET", f"{brief_id}/pricing", timeout=60, params=params)
 
 
 def api_get_covered_claims(brief_id: int) -> Optional[Dict[str, Any]]:
@@ -940,7 +955,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
         if is_actuarial_view else
         "ClaimCenter-style loss trends, competitor and regulatory evidence, and live research, with human sign-off."
     )
-    # Hero: title, the synthetic-data notice and the portfolio stats in one card (styles: .rt-hero in theme.css)
+    # Hero: title, the synthetic-data notice and the portfolio stats in one card (styles: .rt-ws-hero in theme.css)
     title_main, title_accent = workspace_title.split(" ", 1)
     ws_stats = portfolio_stats()
     stat_html = ""
@@ -957,7 +972,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
             f'<div class="v">{val}</div><span class="rt-chip {tone}">{chip}</span></div>'
             for lbl, val, chip, tone, icon in stat_tiles) + "</div>"
     st.markdown(
-        f'<div class="rt-hero"><div class="rt-hero-top"><div>'
+        f'<div class="rt-ws-hero"><div class="rt-ws-hero-top"><div>'
         f'<span class="rt-eyebrow"><i></i>{"Actuarial" if is_actuarial_view else "Claims"} workspace'
         f' · {html.escape(st.session_state.user_role)}</span>'
         f'<div class="rt-ws-title">{title_main} <span class="accent">{title_accent}</span></div>'
@@ -1093,7 +1108,9 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                     st.markdown(pm_context)
 
             # Brief sections, picked in the sidebar under the brief picker; only the open one is drawn
-            sections = (["Actuarial review", "Rate indication", "Launch gate"] if is_actuarial_view else
+            sections = (["Actuarial review", "Rate indication", "Loss development", "Rating plan", "Parametric",
+                         "Business plan", "Rating tests", "Monitoring", "Actuarial memo", "Company assumptions",
+                         "Launch gate"] if is_actuarial_view else
                         ["Claims review", "Claims readiness", "Policy wording", "Handling guideline", "Test scenarios",
                          "Customer letters", "Launch operations", "Launch gate"]) + [
                 "Competitor intelligence", "Underwriting review", "Regulatory compliance", "Live web research"]
@@ -1431,8 +1448,15 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                     withdraw=lambda function, bid=brief["id"]: api_withdraw_signoff(bid, function),
                     can_sign=lambda function: (function == "actuarial") == is_actuarial_view,
                 )
-            if section == "Rate indication":
-                render_pricing(brief, lambda overrides, bid=brief["id"]: api_get_pricing(bid, overrides))
+            actuarial_sections = {"Rate indication": render_pricing, "Loss development": render_loss_development,
+                                  "Rating plan": render_rating_plan, "Business plan": render_business_plan,
+                                  "Actuarial memo": render_actuarial_memo, "Rating tests": render_rating_tests,
+                                  "Monitoring": render_monitoring, "Parametric": render_parametric}
+            if section == "Company assumptions":
+                render_company_settings(lambda method, path, **kw: _api_call(method, path, **kw))
+            if section in actuarial_sections:
+                actuarial_sections[section](
+                    brief, lambda method, path, bid=brief["id"], **kw: _guideline_call(method, f"{bid}/{path}", **kw))
 
             # ---------------------------------------------------------------
             # TAB 5: LIVE WEB RESEARCH (Formatted Sub-Tabs & Right-Side Reader)

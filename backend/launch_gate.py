@@ -4,7 +4,7 @@ Launch Gate (go / no-go)
 One launch decision for the new coverage, tied to the work products Claims prepared:
 
 criteria   computed from the brief's stored artifacts (finding, guideline, readiness, test scenarios,
-           letters, state compliance matrix); none can be ticked by hand
+           letters, actuarial approval of the rate indication, state compliance matrix); none can be ticked by hand
 sign-offs  one per function (Claims, Claims Legal, Compliance, Product, Actuarial, Finance / Reinsurance)
 
 GO needs every criterion met and every function's approval. An approval is given against the current
@@ -85,6 +85,19 @@ def criteria(row: Dict[str, Any]) -> List[Dict[str, Any]]:
                          ("Drafted from an older guideline; redraft. " if stale else "")
                          + f"{approved} of {len(ls)} approved; {tbds} open [TBD] item(s)."))
 
+    act = row.get("actuarial")
+    if act is not None:  # computed by the caller from the current indication (backend.actuarial.status)
+        out.append(_crit("actuarial", "Rate indication approved by Actuarial on current data", act["approved"],
+                         act["detail"]))
+    rt = row.get("rating_tests")
+    if rt is not None:
+        out.append(_crit("rating_tests", "PolicyCenter rating tests all pass", rt["all_passed"],
+                         "Not generated yet (Rating tests section)." if not rt["generated"] else
+                         ("The rating plan changed since the cases were generated; regenerate and rerun. "
+                          if rt["stale"] else "")
+                         + f"{rt['pass']} of {rt['total']} pass, {rt['fail']} fail, {rt['blocked']} blocked, "
+                           f"{rt['not_run']} not run."))
+
     if not matrix:
         out.append(_crit("compliance", "State compliance confirmed for every launch state", False,
                          "Compliance matrix not opened yet (Launch operations tab)."))
@@ -103,7 +116,9 @@ def fingerprint(row: Dict[str, Any]) -> str:
              sc.get("generated_at"), lt.get("generated_at"),
              sorted(l.get("approved_at") or "" for l in lt.get("letters", [])),
              sorted([r["state"], r["status"], *(r.get(k) for k in compliance.EDITABLE_RULE_FIELDS)]
-                    for r in m.get("states", []) if r["launch"])]
+                    for r in m.get("states", []) if r["launch"]),
+             ((row.get("actuarial") or {}).get("approval") or {}).get("fingerprint"),
+             {k: (row.get("rating_tests") or {}).get(k) for k in ("total", "pass", "stale")}]
     return hashlib.sha256(json.dumps(parts, default=str).encode()).hexdigest()[:16]
 
 
