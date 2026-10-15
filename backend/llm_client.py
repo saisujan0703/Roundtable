@@ -33,6 +33,8 @@ DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"  # gemini-2.5-flash is closed to new u
 # each model has its own quota. Override with GEMINI_FALLBACK_MODELS="model-a,model-b" ("" disables).
 DEFAULT_GEMINI_FALLBACKS = "gemini-3.5-flash,gemini-3.1-flash-lite"
 _GEMINI_SWITCH_CODES = (404, 429, 500, 503)
+# A stalled request fails after this long instead of holding the brief open; override with GEMINI_TIMEOUT_SECONDS
+DEFAULT_GEMINI_TIMEOUT_SECONDS = 120
 
 # generation_method values stored on briefs, guidelines, scenarios and letters
 METHOD = {"anthropic": "anthropic_claude", "gemini": "google_gemini"}
@@ -220,13 +222,16 @@ def _gemini_client():
     from google.genai import types
 
     # Free-tier models often return 503 "high demand" for a few seconds: retry briefly, then try the next model
+    timeout_ms = int(float(os.environ.get("GEMINI_TIMEOUT_SECONDS", DEFAULT_GEMINI_TIMEOUT_SECONDS)) * 1000)
     return genai.Client(api_key=_gemini_key(), http_options=types.HttpOptions(
+        timeout=timeout_ms,
         retry_options=types.HttpRetryOptions(attempts=3, initial_delay=2.0, max_delay=10.0, http_status_codes=[500, 503])))
 
 
 def _gemini_models() -> List[str]:
     fallbacks = os.environ.get("GEMINI_FALLBACK_MODELS", DEFAULT_GEMINI_FALLBACKS)
-    return [os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)] + [m.strip() for m in fallbacks.split(",") if m.strip()]
+    models = [os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)] + [m.strip() for m in fallbacks.split(",") if m.strip()]
+    return list(dict.fromkeys(models))  # the main model may also be listed as a fallback
 
 
 def _gemini_generate(client, models: List[str], contents, config):

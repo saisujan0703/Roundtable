@@ -315,7 +315,7 @@ h4 { font-weight: 600; font-size: 1rem; }
 .rt-ws-title { font-size: clamp(1.8rem, 3.2vw, 2.6rem); font-weight: 600; letter-spacing: -0.035em; line-height: 1.08; margin: 12px 0 6px 0; color: var(--rt-ink); }
 .rt-ws-sub { color: var(--rt-muted); font-size: 0.95rem; max-width: 640px; margin: 0; }
 /* Workspace hero: title, demo-data notice and stats in one glowing card */
-.rt-hero {
+.rt-ws-hero {
     position: relative; overflow: hidden;
     background:
         radial-gradient(55% 90% at 100% 0%, rgba(61, 63, 224, 0.16), transparent 65%),
@@ -326,16 +326,16 @@ h4 { font-weight: 600; font-size: 1rem; }
     box-shadow: 0 1px 2px rgba(40, 44, 90, 0.04), 0 24px 48px -28px rgba(40, 44, 90, 0.30);
 }
 /* Dot-grid texture fading in from the top-right corner */
-.rt-hero::before {
+.rt-ws-hero::before {
     content: ""; position: absolute; inset: 0; pointer-events: none;
     background-image: radial-gradient(rgba(61, 63, 224, 0.22) 1px, transparent 1.4px);
     background-size: 18px 18px;
     -webkit-mask-image: radial-gradient(60% 80% at 100% 0%, #000 0%, transparent 70%);
     mask-image: radial-gradient(60% 80% at 100% 0%, #000 0%, transparent 70%);
 }
-.rt-hero > * { position: relative; }
-.rt-hero-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; flex-wrap: wrap; margin-bottom: 22px; }
-.rt-hero .rt-ws-title { font-size: clamp(2rem, 3.6vw, 2.9rem); }
+.rt-ws-hero > * { position: relative; }
+.rt-ws-hero-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; flex-wrap: wrap; margin-bottom: 22px; }
+.rt-ws-hero .rt-ws-title { font-size: clamp(2rem, 3.6vw, 2.9rem); }
 .rt-ws-title .accent {
     background: linear-gradient(90deg, var(--rt-indigo) 0%, #8B5CF6 60%, #C056D8 100%);
     -webkit-background-clip: text; background-clip: text; color: transparent;
