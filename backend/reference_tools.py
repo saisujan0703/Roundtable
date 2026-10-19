@@ -16,7 +16,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Tuple
 
-DOCS_DIR = Path(__file__).resolve().parent.parent
+DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
 
 DOCS = {
     ("entity", "PC"): "01_PC_ENTITY_DATA_DICTIONARY.md",

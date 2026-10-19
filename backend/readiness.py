@@ -136,7 +136,7 @@ def _build_items(brief_data: Dict[str, Any], plan: Dict[str, Any]) -> List[Dict[
         _item("claimcenter_config", "setup", "Configure ClaimCenter (coverage, loss cause, FNOL questions)",
               (f"Add the new coverage type to the product model mapping, keep the '{tag}' risk tag on FNOL, and add FNOL "
                f"questions that separate covered from excluded causes. Exposures most used today: {top_exposures}. "
-               f"See 01_ENTITY_EXTENSION_GUIDE.md and 04_PRODUCT_MODEL_WRITE_PATH.md." if has else
+               f"See docs/01_ENTITY_EXTENSION_GUIDE.md and docs/04_PRODUCT_MODEL_WRITE_PATH.md." if has else
                "Add the coverage type, loss cause/risk tag and FNOL questions in ClaimCenter configuration.")),
         _item("reserving_guidance", "setup", "Issue FNOL reserving guidance",
               (f"Current FNOL reserves develop to {rd.get('incurred_to_initial_ratio')}x (baseline "
