@@ -200,15 +200,22 @@ def _known_names() -> List[str]:
              "Root Insurance", "Hiscox", "Plymouth Rock", "Tesla", "Swiss Re", "Munich Re", "Allianz", "AXA",
              "NAIC", "NHTSA", "FEMA", "NFPA", "IIHS", "NICB", "OSHA", "CPSC", "IRDAI"}
     src = Path(__file__).resolve().parent.parent / "sources"
+    items: List[Dict[str, Any]] = []
     for f in ("competitors.json", "regulatory.json"):
         try:
-            for d in json.loads((src / f).read_text(encoding="utf-8")):
-                n = d.get("competitor_name") or d.get("regulatory_body") or ""
-                n = re.split(r"\s[\(/]", n)[0].strip()
-                if 2 < len(n) < 40:
-                    names.add(n)
+            items += json.loads((src / f).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             pass
+    try:
+        from backend.evidence_sources import as_file_items
+        items += as_file_items()
+    except Exception:
+        pass
+    for d in items:
+        n = d.get("competitor_name") or d.get("regulatory_body") or ""
+        n = re.split(r"\s[\(/]", n)[0].strip()
+        if 2 < len(n) < 40:
+            names.add(n)
     return sorted(names, key=len, reverse=True)
 
 

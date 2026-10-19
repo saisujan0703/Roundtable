@@ -7,6 +7,7 @@ Product Decision Briefs across insurance domains (Claims slice first).
 from __future__ import annotations
 
 import json
+import logging
 import wave
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
@@ -15,10 +16,14 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from backend.database import get_connection
 from backend.llm import MAX_PROXY_TAGS, generate_brief, resolve_analysis_basis, resolve_risk_tag_with_confidence
+from backend import audit
 from backend import auth
+from backend import evidence_sources
+from backend import risk_patterns
 from backend import market_radar
 from backend import pricing
 from backend import readiness
@@ -101,6 +106,9 @@ def init_db() -> None:
 # Ensure tables are ready at import time
 init_db()
 auth.init_auth_tables()
+audit.init_table()
+risk_patterns.init_table()
+evidence_sources.init_table()
 actuarial_settings.init_table()
 market_radar.init_radar_tables()
 
@@ -108,11 +116,39 @@ market_radar.init_radar_tables()
 PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"}
 
 
+log = logging.getLogger("roundtable")
+
+
+async def _audit(request: Request, status: int, body: bytes, **who) -> None:
+    """Record one write in the audit log. A failure to record is logged, never turned into a failed request."""
+    try:
+        await run_in_threadpool(
+            audit.record, method=request.method, path=request.url.path, status=status,
+            action=audit.action_name(request.scope.get("endpoint"), request.method, request.url.path),
+            detail=audit.describe_body(body, request.headers.get("content-type", "")), **who)
+    except Exception:
+        log.exception("Audit log write failed for %s %s", request.method, request.url.path)
+
+
+def _login_email(body: bytes) -> Optional[str]:
+    try:
+        return str(json.loads(body).get("email") or "").strip().lower() or None
+    except (ValueError, AttributeError):
+        return None
+
+
 @app.middleware("http")
 async def enforce_authentication(request: Request, call_next):
-    """Every API call needs a valid bearer token; writes are further limited by role (auth.required_role)."""
+    """Every API call needs a valid bearer token; writes are further limited by role (auth.required_role).
+    Every write that reaches here, done or refused, is recorded in the audit log (backend.audit); sign-in
+    attempts are recorded under the email they were made with."""
+    audited = request.method in audit.WRITE_METHODS
+    body = await request.body() if audited else b""
     if request.method == "OPTIONS" or request.url.path in PUBLIC_PATHS:
-        return await call_next(request)
+        response = await call_next(request)
+        if audited and request.url.path == "/api/auth/login":
+            await _audit(request, response.status_code, body, email=_login_email(body))
+        return response
     header = request.headers.get("authorization", "")
     token = header[7:].strip() if header.lower().startswith("bearer ") else ""
     user = auth.user_for_token(token) if token else None
@@ -121,11 +157,16 @@ async def enforce_authentication(request: Request, call_next):
                             headers={"WWW-Authenticate": "Bearer"})
     needed = auth.required_role(request.method, request.url.path)
     if needed and user["role"] != needed:
+        if audited:
+            await _audit(request, 403, body, user=user)
         return JSONResponse({"detail": f"Only the {needed} can do this ({user['role']} is read-only here)."},
                             status_code=403)
     request.state.user = user
     request.state.token = token
-    return await call_next(request)
+    response = await call_next(request)
+    if audited:
+        await _audit(request, response.status_code, body, user=user)
+    return response
 
 
 @app.on_event("startup")
@@ -298,14 +339,168 @@ def auth_logout(request: Request):
     return {"status": "signed out"}
 
 
+@app.get("/api/audit")
+def get_audit_log(brief_id: Optional[int] = None, email: Optional[str] = None,
+                  outcome: Optional[Literal["ok", "refused"]] = None, limit: int = 200,
+                  before_id: Optional[int] = None):
+    """The audit log (backend.audit), newest first; page back with before_id = the last row's id."""
+    rows = audit.query(brief_id=brief_id, email=email, outcome=outcome, limit=limit, before_id=before_id)
+    return {"entries": rows, "next_before_id": rows[-1]["id"] if len(rows) == max(1, min(limit, audit.MAX_LIMIT)) else None}
+
+
+@app.get("/api/briefs/{brief_id}/audit")
+def get_brief_audit_log(brief_id: int, outcome: Optional[Literal["ok", "refused"]] = None, limit: int = 200,
+                        before_id: Optional[int] = None):
+    """Everything recorded against one brief."""
+    with get_connection() as conn:
+        _require_brief(conn.cursor(), brief_id)
+    return get_audit_log(brief_id=brief_id, outcome=outcome, limit=limit, before_id=before_id)
+
+
 @app.get("/api/tags")
 def list_known_tags() -> List[str]:
-    """Return distinct risk category tags present in the claims database."""
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT risk_category_tag FROM claims ORDER BY risk_category_tag")
-        rows = cursor.fetchall()
-        return [r["risk_category_tag"] for r in rows if r["risk_category_tag"]]
+    """Every risk pattern a brief can stand on: the claims' risk_category_tag values, then custom patterns."""
+    return claims_analytics.list_tags()
+
+
+# ---------------------------------------------------------------------------
+# Custom risk patterns (backend.risk_patterns)
+# ---------------------------------------------------------------------------
+class RiskPatternRequest(BaseModel):
+    label: str = Field(..., max_length=80)
+    keywords: List[str] = Field(..., max_length=risk_patterns.MAX_KEYWORDS)
+    products: List[str] = Field(default_factory=list)
+    description: str = Field("", max_length=1000)
+
+
+class PatternPreviewRequest(BaseModel):
+    keywords: List[str] = Field(..., max_length=risk_patterns.MAX_KEYWORDS)
+    products: List[str] = Field(default_factory=list)
+
+
+@app.get("/api/risk-patterns")
+def list_risk_patterns():
+    claims = claims_analytics._data()["claims"]
+    return {"patterns": [{**p, "claims": int(claims_analytics._match(claims, k).sum()),
+                          "used_by_briefs": risk_patterns.briefs_using(k)}
+                         for k, p in risk_patterns.all_patterns().items()],
+            "products": list(risk_patterns.PRODUCTS), "builtin_tags": claims_analytics.builtin_tags()}
+
+
+@app.post("/api/risk-patterns/preview")
+def preview_risk_pattern(req: PatternPreviewRequest):
+    """What these keywords would catch in the claims data, before saving them as a pattern."""
+    try:
+        clean = risk_patterns.clean("preview", req.keywords, req.products)
+    except risk_patterns.PatternError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return claims_analytics.preview_pattern(clean["keywords"], clean["products"])
+
+
+@app.post("/api/risk-patterns", status_code=201)
+def create_risk_pattern(req: RiskPatternRequest, request: Request):
+    try:
+        return risk_patterns.save(req.model_dump(), request.state.user.get("name", ""))
+    except risk_patterns.PatternError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put("/api/risk-patterns/{key}")
+def update_risk_pattern(key: str, req: RiskPatternRequest, request: Request):
+    try:
+        return risk_patterns.save(req.model_dump(), request.state.user.get("name", ""), key=key)
+    except risk_patterns.PatternError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Risk pattern {key} not found.")
+
+
+@app.delete("/api/risk-patterns/{key}")
+def delete_risk_pattern(key: str):
+    try:
+        risk_patterns.delete(key)
+    except risk_patterns.PatternError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Risk pattern {key} not found.")
+    return {"deleted": key}
+
+
+# ---------------------------------------------------------------------------
+# Competitor and regulatory sources (curated files + backend.evidence_sources)
+# ---------------------------------------------------------------------------
+class SourceRequest(BaseModel):
+    source_type: Literal["competitor", "regulatory"]
+    name: str = Field(..., max_length=120)
+    title: str = Field(..., max_length=200)
+    summary: str = Field(..., max_length=3000)
+    url: str = Field(..., max_length=500)
+    date_collected: Optional[str] = None
+    origin: Literal["manual", "web"] = "manual"
+
+
+class SourceSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=200)
+    source_type: Literal["competitor", "regulatory"]
+
+
+def _builtin_sources() -> List[dict]:
+    from backend.rag import SOURCES_DIR, _json_items
+    out = []
+    for i in _json_items(SOURCES_DIR / "competitors.json"):
+        out.append({"source_type": "competitor", "name": i.get("competitor_name"), "title": i.get("product_name"),
+                    "summary": i.get("coverage_summary"), "url": i.get("source_url"),
+                    "date_collected": i.get("date_collected"), "origin": "built-in"})
+    for i in _json_items(SOURCES_DIR / "regulatory.json"):
+        out.append({"source_type": "regulatory", "name": i.get("regulatory_body"), "title": i.get("regulation_title"),
+                    "summary": i.get("summary"), "url": i.get("source_url"),
+                    "date_collected": i.get("date_collected"), "origin": "built-in"})
+    return out
+
+
+@app.get("/api/sources")
+def list_evidence_sources(source_type: Optional[Literal["competitor", "regulatory"]] = None):
+    """Every competitor and regulatory source briefs can cite: the ones users added, then the built-in set."""
+    added = evidence_sources.list_sources(source_type)
+    builtin = [b for b in _builtin_sources() if not source_type or b["source_type"] == source_type]
+    return {"added": added, "builtin": builtin}
+
+
+@app.post("/api/sources", status_code=201)
+def add_evidence_source(req: SourceRequest, request: Request):
+    try:
+        return evidence_sources.add(req.model_dump(), request.state.user.get("name", ""))
+    except evidence_sources.SourceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put("/api/sources/{source_id}")
+def update_evidence_source(source_id: int, req: SourceRequest):
+    try:
+        return evidence_sources.update(source_id, req.model_dump())
+    except evidence_sources.SourceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Source not found.")
+
+
+@app.delete("/api/sources/{source_id}")
+def delete_evidence_source(source_id: int):
+    try:
+        evidence_sources.delete(source_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    return {"deleted": source_id}
+
+
+@app.post("/api/sources/search")
+def search_evidence_sources(req: SourceSearchRequest):
+    """Web pages to review and add (nothing is saved here). Pages already saved or built in are left out."""
+    known = [s["url"] for s in evidence_sources.list_sources()] + [b["url"] for b in _builtin_sources()]
+    try:
+        return evidence_sources.search_web(req.query, req.source_type, known)
+    except evidence_sources.SourceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/proxy-suggestions")

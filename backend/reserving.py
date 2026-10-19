@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from backend import analytics
+from backend import analytics, risk_patterns
 
 MIN_PATTERN_CLAIMS = 300   # fewer claims than this: development factors from the whole scope instead
 MAX_TAIL = 1.5
@@ -162,11 +162,11 @@ def _section(pattern: pd.DataFrame, basis: pd.DataFrame, years: List[int], valua
 def development(key: str, tail_factor: float = 1.0) -> Dict[str, Any]:
     """Reported-count and incurred development for risk pattern *key* (one tag or several joined with '+')."""
     tail = round(max(1.0, min(MAX_TAIL, float(tail_factor))), 4)
-    return copy.deepcopy(_development(analytics._db_version(), key, tail))
+    return copy.deepcopy(_development((analytics._db_version(), risk_patterns.version()), key, tail))
 
 
 @lru_cache(maxsize=16)
-def _development(version: float, key: str, tail: float) -> Dict[str, Any]:
+def _development(version: tuple, key: str, tail: float) -> Dict[str, Any]:
     scope, tc, bc, be = analytics._scope_frames(key)
     if tc.empty:
         return {"has_data": False, "reason": "No claims for this risk pattern."}

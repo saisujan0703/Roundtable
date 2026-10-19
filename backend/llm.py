@@ -30,7 +30,7 @@ try:
 except ImportError:
     pass
 
-from backend import conflicts, llm_client, verification
+from backend import conflicts, llm_client, risk_patterns, verification
 from backend.analytics import build_claims_analytics, get_line_baseline, list_tags
 from backend.models import (
     BriefEvidence,
@@ -127,6 +127,12 @@ DENIAL_REASON_NAMES = {
 }
 
 
+def _semantic_map() -> Dict[str, List[str]]:
+    """Keywords per risk pattern: the built-in map plus each custom pattern's keywords and name."""
+    custom = {k: p["keywords"] + [p["label"].lower()] for k, p in risk_patterns.all_patterns().items()}
+    return {**TAG_SEMANTIC_MAP, **custom}
+
+
 def resolve_risk_tag_with_confidence(
     title: str,
     explicit_tag: Optional[str] = None
@@ -152,7 +158,7 @@ def resolve_risk_tag_with_confidence(
     best_tag: Optional[str] = None
     best_score: float = 0.0
 
-    for tag, keywords in TAG_SEMANTIC_MAP.items():
+    for tag, keywords in _semantic_map().items():
         # 1. Tag name as a whole word: plural / past / '-storm' endings count ('hails', 'strained', 'hailstorm'),
         #    other words that merely contain it do not ('ride-hailing', 'windshield', 'moldings')
         names = {tag, tag.replace("_", " ")}
@@ -212,8 +218,9 @@ def _words(text: str) -> set:
 def _tag_vocabulary() -> Dict[str, set]:
     """Peril words per known tag (semantic keywords + LossCause name). Words shared by 3+ tags are too generic."""
     vocab = {}
+    semantic = _semantic_map()
     for tag in list_tags():
-        text = " ".join(TAG_SEMANTIC_MAP.get(tag, [])) + " " + tag + " " + LOSS_CAUSE_NAMES.get(tag, "")
+        text = " ".join(semantic.get(tag, [])) + " " + tag + " " + LOSS_CAUSE_NAMES.get(tag, "")
         vocab[tag] = _words(text)
     counts: Dict[str, int] = {}
     for words in vocab.values():
@@ -843,6 +850,14 @@ def generate_external_market_evidence(
                 "reuters.com", "bloomberg.com", "wsj.com", "ft.com", "cnbc.com", "apnews.com",
                 "nytimes.com", "washingtonpost.com", "insurancethoughtleadership.com",
             ]},
+        ),
+        (
+            # Market failures: carriers that launched similar cover and withdrew it, or lost money on it
+            # (backend.conflicts checks these against a favourable claims picture)
+            f"{title} insurer withdrew discontinued exited market losses unprofitable",
+            "articles",
+            "news",
+            {"topic": "news", "days": 1825},
         ),
         (
             f"{title} insurance industry insights commentary",

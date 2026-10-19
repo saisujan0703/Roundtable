@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from backend import risk_patterns
 from backend.database import DB_PATH, get_connection
 
 LARGE_LOSS_THRESHOLD = 100_000
@@ -40,12 +41,19 @@ GAP_DENIAL_REASONS = {            # denials that signal demand for coverage the 
 # =========================================================================
 # Data access (cached per database file version)
 # =========================================================================
-def _db_version() -> float:
-    return DB_PATH.stat().st_mtime
+def _db_version() -> tuple:
+    """Fingerprint of the claims, exposure and policy data. Not the file's timestamp: every audit-log entry, sign-in
+    or saved setting changes that, and would force a reload of all claims for nothing."""
+    with get_connection() as conn:
+        return tuple(conn.execute(
+            "SELECT (SELECT COUNT(*) FROM claims), (SELECT MAX(rowid) FROM claims), "
+            "(SELECT COUNT(*) FROM earned_exposure), (SELECT MAX(rowid) FROM earned_exposure), "
+            "(SELECT COUNT(*) FROM policies), (SELECT MAX(rowid) FROM policies), "
+            "(SELECT COUNT(*) FROM exposures)").fetchone())
 
 
 @lru_cache(maxsize=2)
-def _load(version: float) -> Dict[str, pd.DataFrame]:
+def _load(version: tuple) -> Dict[str, pd.DataFrame]:
     conn = get_connection()
     try:
         claims = pd.read_sql("SELECT * FROM claims", conn, parse_dates=["loss_date", "reported_date", "close_date", "reopened_date"])
@@ -75,8 +83,62 @@ def valuation_date() -> str:
     return _data()["valuation"].strftime("%Y-%m-%d")
 
 
-def list_tags() -> List[str]:
+def builtin_tags() -> List[str]:
+    """The risk_category_tag values ClaimCenter set on the claims."""
     return sorted(_data()["claims"]["risk_category_tag"].dropna().unique().tolist())
+
+
+def list_tags() -> List[str]:
+    """Every risk pattern a brief can stand on: the built-in tags, then the custom keyword patterns
+    (backend.risk_patterns)."""
+    return builtin_tags() + sorted(risk_patterns.all_patterns())
+
+
+def _match(c: pd.DataFrame, tag_value) -> pd.Series:
+    """Which claims belong to the risk pattern: built-in tags by risk_category_tag, custom patterns by their
+    keywords in the claim text (and products, when the pattern names some). Pooled parts ('a+b') are OR-ed."""
+    tags = _tags(tag_value)
+    mask = c["risk_category_tag"].isin([t for t in tags if not risk_patterns.is_custom(t)])
+    for t in tags:
+        p = risk_patterns.get(t) if risk_patterns.is_custom(t) else None
+        if not p:
+            continue
+        rx = risk_patterns.regex(p["keywords"])
+        hit = pd.Series(False, index=c.index)
+        for col in risk_patterns.TEXT_COLUMNS:
+            hit |= c[col].fillna("").astype(str).str.contains(rx)
+        if p["products"]:
+            hit &= c["product_code"].isin(p["products"])
+        mask |= hit
+    return mask
+
+
+def preview_pattern(keywords: List[str], products: Optional[List[str]] = None, samples: int = 8) -> dict:
+    """What a keyword pattern would catch, before it is saved: counts, the products and built-in tags the matches
+    sit under, and sample loss descriptions."""
+    c = _data()["claims"]
+    rx = risk_patterns.regex(keywords)
+    hit = pd.Series(False, index=c.index)
+    for col in risk_patterns.TEXT_COLUMNS:
+        hit |= c[col].fillna("").astype(str).str.contains(rx)
+    if products:
+        hit &= c["product_code"].isin(products)
+    m = c[hit]
+    if m.empty:
+        return {"claims": 0, "products": {}, "builtin_tags": {}, "samples": [], "years": None}
+    sample = m.sample(min(samples, len(m)), random_state=0).sort_values("loss_date", ascending=False)
+    return {
+        "claims": int(len(m)),
+        "products": {k: int(v) for k, v in m["product_code"].value_counts().items()},
+        "builtin_tags": {k: int(v) for k, v in m["risk_category_tag"].value_counts().head(8).items()},
+        "denied_pct": _r(100 * m["coverage_denied_flag"].fillna(0).astype(float).mean(), 1),
+        "incurred": _r(m["claim_amount"].fillna(0).sum(), 0),
+        "years": f"{int(m['ay'].min())}-{int(m['ay'].max())}",
+        "samples": [{"claim_number": _s(r.claim_number), "loss_date": r.loss_date.strftime("%Y-%m-%d"),
+                     "product": _s(r.product_code), "tag": _s(r.risk_category_tag),
+                     "description": _s(r.loss_description), "denial_reason": _s(r.denial_reason)}
+                    for r in sample.itertuples()],
+    }
 
 
 def _tags(tag_value) -> List[str]:
@@ -101,7 +163,7 @@ def _s(x):
 def get_tag_scope(tag_value: str) -> dict:
     d = _data()
     c = d["claims"]
-    tc = c[c["risk_category_tag"].isin(_tags(tag_value))]
+    tc = c[_match(c, tag_value)]
     if tc.empty:
         return {"tag_value": tag_value, "has_data": False, "products": [], "powertrain": None}
     share = tc["product_code"].value_counts(normalize=True)
@@ -125,7 +187,7 @@ def _scope_frames(tag_value: str):
     if scope["powertrain"]:
         base_c = base_c[base_c["vehicle_powertrain"] == scope["powertrain"]]
         base_e = base_e[base_e["vehicle_powertrain"] == scope["powertrain"]]
-    tag_c = base_c[base_c["risk_category_tag"].isin(_tags(tag_value))]
+    tag_c = base_c[_match(base_c, tag_value)]
     return scope, tag_c, base_c, base_e
 
 
@@ -218,7 +280,7 @@ def get_severity_profile(tag_value: str) -> dict:
     scope, tc, bc, be = _scope_frames(tag_value)
     if tc.empty:
         return {"has_data": False}
-    sev, base_sev = _severity(tc), _severity(bc[~bc["risk_category_tag"].isin(_tags(tag_value))])
+    sev, base_sev = _severity(tc), _severity(bc[~_match(bc, tag_value)])
     closed_paid = tc[(tc["claim_state"] == "closed") & (tc["paid_loss"] > 0)]["paid_loss"]
     return {
         "has_data": True,
@@ -386,7 +448,7 @@ def get_coverage_gap_signals(tag_value: str) -> dict:
     if tc.empty:
         return {"has_data": False}
     closed = tc[tc["claim_state"] == "closed"]
-    base_closed = bc[(bc["claim_state"] == "closed") & (~bc["risk_category_tag"].isin(_tags(tag_value)))]
+    base_closed = bc[(bc["claim_state"] == "closed") & (~_match(bc, tag_value))]
     denied = tc[tc["coverage_denied_flag"] == 1]
     gap = denied[denied["denial_reason"].isin(GAP_DENIAL_REASONS)]
     ex = _data()["exposures"]
@@ -419,7 +481,7 @@ def get_claim_handling_metrics(tag_value: str) -> dict:
     if tc.empty:
         return {"has_data": False}
     val = _data()["valuation"]
-    base = bc[~bc["risk_category_tag"].isin(_tags(tag_value))]
+    base = bc[~_match(bc, tag_value)]
     closed = tc[tc["claim_state"] == "closed"]
     cycle = (closed["close_date"] - closed["reported_date"]).dt.days
     base_closed = base[base["claim_state"] == "closed"]
@@ -482,7 +544,7 @@ def get_reserve_development(tag_value: str) -> dict:
         per = df["claim_amount"] / df["initial_reserve"]
         return ratio, per.median(), (per > 1.25).mean()
 
-    base = bc[~bc["risk_category_tag"].isin(_tags(tag_value))]
+    base = bc[~_match(bc, tag_value)]
     r, med, adverse = dev(tc)
     br, bmed, badverse = dev(base)
     by_ay = []
@@ -604,9 +666,9 @@ def detect_notable_trends(min_annual_trend: float = 0.03) -> list[dict]:
 
 
 @lru_cache(maxsize=8)
-def _notable_trends(version: float, min_annual_trend: float) -> tuple:
+def _notable_trends(version: tuple, min_annual_trend: float) -> tuple:
     notable = []
-    for tag in list_tags():
+    for tag in builtin_tags():   # custom patterns overlap the built-in tags, so they are left out of portfolio views
         f = fit_frequency_trend(tag)
         if f["has_data"] and f["significant"] and abs(f["annual_trend_pct"]) >= 100 * min_annual_trend:
             notable.append({"tag_value": tag, "annual_trend_pct": f["annual_trend_pct"], "z": f["z"],
@@ -617,9 +679,9 @@ def _notable_trends(version: float, min_annual_trend: float) -> tuple:
 
 
 @lru_cache(maxsize=2)
-def _all_fitted_trends(version: float) -> tuple:
+def _all_fitted_trends(version: tuple) -> tuple:
     out = []
-    for tag in list_tags():
+    for tag in builtin_tags():
         f = fit_frequency_trend(tag)
         if f["has_data"]:
             out.append((tag, f["annual_trend_pct"]))
@@ -630,7 +692,8 @@ def get_relative_growth_benchmark(tag_value: str) -> dict:
     """This tag's fitted annual frequency trend vs the average across all other tags."""
     tags = _tags(tag_value)
     trends = dict(_all_fitted_trends(_db_version()))
-    if len(tags) > 1:   # pooled proxy pattern: fit it as one pattern, compare with tags outside the pool
+    if len(tags) > 1 or risk_patterns.is_custom(tag_value):
+        # pooled proxy or custom pattern: fit it as one pattern, compare with tags outside it
         fit = fit_frequency_trend(tag_value)
         trends = {k: v for k, v in trends.items() if k not in tags}
         if fit["has_data"]:

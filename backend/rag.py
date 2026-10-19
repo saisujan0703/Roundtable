@@ -26,54 +26,65 @@ _chroma_client = None
 _chroma_collection = None
 
 
+def _json_items(path: Path) -> List[Dict[str, Any]]:
+    if not path.exists():
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _added_items(kind: str) -> List[Dict[str, Any]]:
+    """Sources users added in the app (backend.evidence_sources), in the curated files' shape."""
+    try:
+        from backend.evidence_sources import as_file_items
+        return [i for i in as_file_items() if i["source_type"] == kind]
+    except Exception:
+        return []
+
+
 def get_sources_data(sources_dir: Path | str = SOURCES_DIR) -> List[Dict[str, Any]]:
-    """Load raw entries from competitors.json and regulatory.json."""
+    """Load the curated entries (competitors.json, regulatory.json) plus the sources users added in the app."""
     sources_dir = Path(sources_dir)
     documents: List[Dict[str, Any]] = []
 
-    comp_file = sources_dir / "competitors.json"
-    if comp_file.exists():
-        with open(comp_file, "r", encoding="utf-8") as f:
-            for item in json.load(f):
-                doc_text = (
-                    f"Competitor: {item.get('competitor_name')}\n"
-                    f"Product: {item.get('product_name')}\n"
-                    f"Summary: {item.get('coverage_summary')}"
-                )
-                documents.append({
-                    "id": f"comp_{item.get('competitor_name', '').lower().replace(' ', '_')}_{item.get('product_name', '').lower().replace(' ', '_')}",
-                    "text": doc_text,
-                    "metadata": {
-                        "source_name": item.get("competitor_name", ""),
-                        "product_name": item.get("product_name", ""),
-                        "source_type": item.get("source_type", "competitor"),
-                        "source_url": item.get("source_url", ""),
-                        "date_collected": item.get("date_collected", ""),
-                    }
-                })
+    for item in _json_items(sources_dir / "competitors.json") + _added_items("competitor"):
+        doc_text = (
+            f"Competitor: {item.get('competitor_name')}\n"
+            f"Product: {item.get('product_name')}\n"
+            f"Summary: {item.get('coverage_summary')}"
+        )
+        documents.append({
+            "id": item.get("_id") or f"comp_{item.get('competitor_name', '').lower().replace(' ', '_')}_"
+                                    f"{item.get('product_name', '').lower().replace(' ', '_')}",
+            "text": doc_text,
+            "metadata": {
+                "source_name": item.get("competitor_name", ""),
+                "product_name": item.get("product_name", ""),
+                "source_type": item.get("source_type", "competitor"),
+                "source_url": item.get("source_url", ""),
+                "date_collected": item.get("date_collected", ""),
+            }
+        })
 
-    reg_file = sources_dir / "regulatory.json"
-    if reg_file.exists():
-        with open(reg_file, "r", encoding="utf-8") as f:
-            for item in json.load(f):
-                doc_text = (
-                    f"Regulatory Body: {item.get('regulatory_body')}\n"
-                    f"Title: {item.get('regulation_title')}\n"
-                    f"Summary: {item.get('summary')}"
-                )
-                documents.append({
-                    # Body plus title: one body (e.g. NAIC) publishes several sources
-                    "id": f"reg_{item.get('regulatory_body', '').lower().replace(' ', '_')[:20]}_"
-                          f"{re.sub(r'[^a-z0-9]+', '_', item.get('regulation_title', '').lower())[:40]}",
-                    "text": doc_text,
-                    "metadata": {
-                        "source_name": item.get("regulatory_body", ""),
-                        "product_name": item.get("regulation_title", ""),
-                        "source_type": item.get("source_type", "regulatory"),
-                        "source_url": item.get("source_url", ""),
-                        "date_collected": item.get("date_collected", ""),
-                    }
-                })
+    for item in _json_items(sources_dir / "regulatory.json") + _added_items("regulatory"):
+        doc_text = (
+            f"Regulatory Body: {item.get('regulatory_body')}\n"
+            f"Title: {item.get('regulation_title')}\n"
+            f"Summary: {item.get('summary')}"
+        )
+        documents.append({
+            # Body plus title: one body (e.g. NAIC) publishes several sources
+            "id": item.get("_id") or f"reg_{item.get('regulatory_body', '').lower().replace(' ', '_')[:20]}_"
+                                    f"{re.sub(r'[^a-z0-9]+', '_', item.get('regulation_title', '').lower())[:40]}",
+            "text": doc_text,
+            "metadata": {
+                "source_name": item.get("regulatory_body", ""),
+                "product_name": item.get("regulation_title", ""),
+                "source_type": item.get("source_type", "regulatory"),
+                "source_url": item.get("source_url", ""),
+                "date_collected": item.get("date_collected", ""),
+            }
+        })
 
     return documents
 

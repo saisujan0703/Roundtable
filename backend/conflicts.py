@@ -18,6 +18,9 @@ Checks
                             new cover while a competitor source says standard policies already cover it
 - proposed_vs_final         a curated source is a PROPOSED rule, but the brief describes it as binding, or a
                             live web result reports the same rule as final
+- claims_vs_market_experience  the claims data looks favourable (new cover indicated, or a healthy loss ratio in
+                            scope), but a competitor / regulatory source or live research reports carriers
+                            withdrawing from, discontinuing or losing money on this kind of cover
 - source_vs_source          (AI cross-check) any two text sources contradict each other
 
 Each conflict is {"kind", "severity" (high | medium | low), "summary", "sides": [{"label", "text", "url"}]}.
@@ -51,6 +54,23 @@ _ALREADY_STANDARD = re.compile(r"(?<!not )\b(?:covered|included) (?:by|in|under)
 _PROPOSED = re.compile(r"\bproposed (?:rule|standard|regulation)\b|\bnotice of proposed rulemaking\b", re.IGNORECASE)
 _BINDING = re.compile(r"\b(?:requires?|required|mandates?|mandatory|must|in effect|in force)\b", re.IGNORECASE)
 _FINAL = re.compile(r"\bfinal rule\b|\bfinali[sz]ed\b|\btakes effect\b|\bwent into effect\b", re.IGNORECASE)
+# Market experience: carriers leaving a line or product, and the losses that drove it
+_EXIT = re.compile(
+    r"\b(?:withdr(?:ew|awn|awing|aws?)|exit(?:ed|ing|s)?(?= (?:the |this |that |from )?(?:market|line|business|product|state))"
+    r"|pull(?:ed|ing|s)? (?:out|back)|discontinu\w*|stop(?:ped|ping|s)? (?:selling|writing|offering)"
+    r"|no longer (?:offer|sell|writ)\w*|ceas(?:e|ed|es|ing) (?:to )?(?:writ|offer|sell)\w*|non-?renew\w*"
+    r"|left the market|shut(?:s|ting)? down|wound down|wind(?:ing)? down|run-?off|insolven\w*|bankrupt\w*"
+    r"|retreat\w* from)",
+    re.IGNORECASE)
+_LOSSES = re.compile(
+    r"\b(?:unprofitab\w*|underwriting loss\w*|(?:heavy|mounting|significant|large|steep|substantial|unsustainable) losses"
+    r"|losses (?:mounted|soared|exceeded|piled up)|losing money|lost money"
+    r"|loss ratios? (?:of |above |over |exceeding |near |topping )?(?:1\d\d|9\d)\s?%"
+    r"|combined ratios? (?:of |above |over |exceeding )?1\d\d|adverse (?:loss )?(?:experience|development)"
+    r"|reserve (?:strengthening|charges?))",
+    re.IGNORECASE)
+FAVOURABLE_LOSS_RATIO_PCT = 65.0   # scope loss + ALAE ratio at or below this reads as a profitable book
+
 _RULE_IDS = re.compile(r"FMVSS\s+No\.?\s*\d+[a-z]?|RIN\s+\d{4}-[A-Z0-9]{4}|\d+\s+CFR\s+(?:Part\s+|§\s*)?\d+(?:\.\d+)?|MDL-\d+",
                        re.IGNORECASE)
 
@@ -193,6 +213,84 @@ def check_market(rec: Dict[str, Any], gaps: Dict[str, Any], proxy: bool, retriev
     return out
 
 
+def _claims_outlook(analytics: Dict[str, Any], rec: Dict[str, Any], proxy: bool) -> Optional[Dict[str, str]]:
+    """The claims side when the internal data looks favourable for the product, else None."""
+    lr = analytics.get("loss_ratio") or {}
+    scope_lr = lr.get("scope_loss_ratio_pct") if lr.get("has_data") else None
+    new_cover = _verdict_stance(rec.get("verdict", "")) == "new_cover"
+    healthy = scope_lr is not None and scope_lr <= FAVOURABLE_LOSS_RATIO_PCT
+    if not new_cover and not healthy:
+        return None
+    parts = []
+    if new_cover:
+        parts.append(f"Claims verdict {rec['verdict']}: {rec.get('finding', '')}")
+    if scope_lr is not None:
+        parts.append(f"Loss + ALAE ratio in scope {scope_lr:.1f}% on ${lr.get('earned_premium') or 0:,.0f} earned premium"
+                     + (" (healthy)." if healthy else "."))
+    return {"label": "Claims data (proxy patterns)" if proxy else "Claims data", "text": " ".join(parts),
+            "url": "sqlite://roundtable.db/claims?metric=loss_ratio"}
+
+
+def _bad_experience(text: str) -> Optional[Tuple[str, int, int]]:
+    """('exit_and_losses' | 'exit' | 'losses', start, end of the span to quote) when the text reports carriers
+    retreating from the cover or losing money on it."""
+    ex, lo = _EXIT.search(text or ""), _LOSSES.search(text or "")
+    if ex and lo:
+        a, b = min(ex.start(), lo.start()), max(ex.end(), lo.end())
+        return ("exit_and_losses", a, b) if b - a < 400 else ("exit_and_losses", ex.start(), ex.end())
+    if ex:
+        return "exit", ex.start(), ex.end()
+    if lo:
+        return "losses", lo.start(), lo.end()
+    return None
+
+
+def _about_risk(text: str, risk_words: set) -> bool:
+    words = {w.replace("-", "") for w in re.findall(r"[a-z]+(?:-[a-z]+)*", (text or "").lower())}
+    return not risk_words or any(w.startswith(r) for w in words for r in risk_words)
+
+
+def check_market_experience(analytics: Dict[str, Any], rec: Dict[str, Any], proxy: bool,
+                            retrieved: List[Dict[str, Any]], external: List[Dict[str, Any]],
+                            risk_words: Optional[set] = None) -> List[Dict[str, Any]]:
+    """Internal claims look good, but the market reports carriers retreating from or losing money on this cover."""
+    claims_side = _claims_outlook(analytics, rec, proxy)
+    if not claims_side:
+        return []
+    found: List[Tuple[str, Dict[str, str]]] = []
+    for d in retrieved:      # curated sources were retrieved for this brief, so they are on topic
+        text = _summary(d)
+        hit = _bad_experience(text)
+        if hit:
+            found.append((hit[0], {"label": f"{_source(d)} (curated)", "text": _snippet(text, hit[1], hit[2]),
+                                   "url": (d.get("metadata") or {}).get("source_url", "")}))
+    for e in external:
+        if e.get("is_insurance_related") is False:
+            continue
+        text = " ".join(f"{e.get('product_or_initiative_name', '')}. {e.get('summary', '')}".replace("#", " ").split())
+        hit = _bad_experience(text)
+        if hit and _about_risk(text, risk_words or set()):
+            found.append((hit[0], {"label": f"{e.get('source_name', 'Web')} (live research)",
+                                   "text": _snippet(text, hit[1], hit[2]), "url": e.get("url", "")}))
+    if not found:
+        return []
+    rank = {"exit_and_losses": 0, "exit": 1, "losses": 2}
+    found.sort(key=lambda f: rank[f[0]])
+    sides = list({s["label"]: s for _, s in reversed(found)}.values())[::-1][:3]   # one per source, strongest first
+    worst = found[0][0]
+    what = {"exit_and_losses": "carriers withdrew from or discontinued similar cover after losses",
+            "exit": "carriers withdrew from or discontinued similar cover",
+            "losses": "carriers have lost money on similar cover"}[worst]
+    return [{
+        "kind": "claims_vs_market_experience",
+        "severity": HIGH if worst == "exit_and_losses" and not proxy else MEDIUM,
+        "summary": f"The claims data looks favourable for this product, but the market reports {what}. Find out why "
+                   "they left or lost money (pricing, adverse selection, fraud, litigation, catastrophe) and whether it "
+                   "applies here before building.",
+        "sides": [claims_side, *sides],
+    }]
+
+
 def check_proposed_rules(brief: Dict[str, Any], retrieved: List[Dict[str, Any]],
                          external: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
@@ -244,7 +342,7 @@ MAX_AI_CONFLICTS = 5
 
 CROSS_CHECK_PROMPT = """You check a Product Decision Brief's evidence for contradictions. You get numbered sources inside <sources>: the product manager's idea description, statements the brief makes, curated competitor and regulatory sources, and live web research results.
 
-Report pairs of sources that make CONTRADICTORY factual claims about the same thing that matters for this product: whether a risk is covered or excluded, by whom, whether a rule is proposed or final, which direction a cost or claim trend is going, what a competitor offers.
+Report pairs of sources that make CONTRADICTORY factual claims about the same thing that matters for this product: whether a risk is covered or excluded, by whom, whether a rule is proposed or final, which direction a cost or claim trend is going, what a competitor offers, and whether this kind of cover is viable or profitable (e.g. the company's own claims analysis looks favourable while a source reports carriers withdrew from, discontinued or lost money on similar cover).
 
 RULES:
 1. Only real contradictions: both cannot be true at once. Differences in scope are NOT conflicts (wear and tear vs accident damage, one state vs another, one carrier vs another, older vs newer date when both say so). Missing information is not a conflict.
@@ -273,6 +371,13 @@ CROSS_CHECK_SCHEMA = {
 def _cross_check_sources(brief: Dict[str, Any], retrieved: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """Every text the cross-check may quote: [{"label", "text", "url"}]."""
     sources: List[Dict[str, str]] = []
+    analytics = brief.get("claims_analytics") or {}
+    if (analytics.get("summary") or {}).get("has_data"):
+        outlook = _claims_outlook(analytics, analytics.get("recommendation") or {},
+                                  brief.get("analysis_basis") == "proxy")
+        if outlook:
+            sources.append({"label": "Roundtable claims analysis (computed)", "text": outlook["text"][:MAX_SOURCE_CHARS],
+                            "url": outlook["url"]})
     if brief.get("idea_context"):
         sources.append({"label": "PM's idea description", "text": brief["idea_context"][:1500], "url": ""})
     for field, what in (("competitor_comparison", "competitor"), ("regulatory_notes", "regulatory")):
@@ -361,7 +466,9 @@ def detect_conflicts(brief: Dict[str, Any], retrieved: List[Dict[str, Any]],
     if has_claims:
         conflicts += check_recommendation(brief, rec)
         conflicts += check_market(rec, gaps, proxy, retrieved, external, _risk_words(brief))
-        checks += ["recommendation vs claims verdict", "competitor offerings vs claims verdict"]
+        conflicts += check_market_experience(analytics, rec, proxy, retrieved, external, _risk_words(brief))
+        checks += ["recommendation vs claims verdict", "competitor offerings vs claims verdict",
+                   "favourable claims vs market withdrawals and losses"]
         if brief.get("idea_context"):
             conflicts += check_pm_story(brief, gaps, proxy)
             checks.append("idea description vs denial data")

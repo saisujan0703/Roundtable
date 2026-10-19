@@ -45,7 +45,7 @@ def _r(x, n=4):
 
 
 @lru_cache(maxsize=2)
-def _exposure_frame(version: float) -> pd.DataFrame:
+def _exposure_frame(version: tuple) -> pd.DataFrame:
     conn = get_connection()
     try:
         return pd.read_sql(
@@ -57,7 +57,7 @@ def _exposure_frame(version: float) -> pd.DataFrame:
 
 
 @lru_cache(maxsize=2)
-def _deductibles(version: float) -> pd.Series:
+def _deductibles(version: tuple) -> pd.Series:
     conn = get_connection()
     try:
         return pd.read_sql("SELECT policy_id, deductible FROM policies", conn).set_index("policy_id")["deductible"]

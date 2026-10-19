@@ -33,6 +33,8 @@ from pricing_panel import render_pricing
 from actuarial_panels import (render_actuarial_memo, render_business_plan, render_loss_development,
                                render_rating_plan)
 from actuarial_ops_panels import render_company_settings, render_monitoring, render_parametric, render_rating_tests
+from audit_panel import render_audit_log
+from library_panel import render_library
 from radar_panel import render_radar
 from verification_badge import chip_html, render_verification
 from home_page import money_short, portfolio_stats, render_home, sculpture_svg
@@ -229,7 +231,7 @@ SECTION_ICONS = {
     "Rating plan": ":material/table_chart:", "Business plan": ":material/account_balance:",
     "Actuarial memo": ":material/article:", "Rating tests": ":material/fact_check:",
     "Monitoring": ":material/monitor_heart:", "Parametric": ":material/thunderstorm:",
-    "Company assumptions": ":material/tune:",
+    "Company assumptions": ":material/tune:", "Audit log": ":material/history:",
     "Claims readiness": ":material/task_alt:", "Policy wording": ":material/description:",
     "Handling guideline": ":material/menu_book:", "Test scenarios": ":material/science:",
     "Customer letters": ":material/mail:", "Launch operations": ":material/rocket_launch:",
@@ -638,7 +640,7 @@ def open_login(view: str) -> None:
     st.session_state.current_view = "login"
 
 
-if st.session_state.current_view == "radar" and not st.session_state.is_authenticated:
+if st.session_state.current_view in ("radar", "library") and not st.session_state.is_authenticated:
     st.session_state.current_view = "login"
 # Workspaces need a session; a signed-in role that lands on another role's workspace is sent to its own
 if st.session_state.current_view in WORKSPACES and not st.session_state.is_authenticated:
@@ -700,25 +702,25 @@ st.markdown("""
     align-items: center;
     gap: 8px;
 }
-.st-key-nav_home .stButton > button[kind], .st-key-nav_claims .stButton > button[kind], .st-key-nav_actuarial .stButton > button[kind], .st-key-nav_radar .stButton > button[kind] {
+.st-key-nav_home .stButton > button[kind], .st-key-nav_claims .stButton > button[kind], .st-key-nav_actuarial .stButton > button[kind], .st-key-nav_radar .stButton > button[kind], .st-key-nav_library .stButton > button[kind] {
     background: transparent !important;
     border: none !important;
     box-shadow: none !important;
     color: #121318 !important;
 }
-.st-key-nav_home .stButton > button[kind] p, .st-key-nav_claims .stButton > button[kind] p, .st-key-nav_actuarial .stButton > button[kind] p, .st-key-nav_radar .stButton > button[kind] p {
+.st-key-nav_home .stButton > button[kind] p, .st-key-nav_claims .stButton > button[kind] p, .st-key-nav_actuarial .stButton > button[kind] p, .st-key-nav_radar .stButton > button[kind] p, .st-key-nav_library .stButton > button[kind] p {
     font-size: 0.9rem !important;
     font-weight: 500 !important;
     color: #121318 !important;
 }
-.st-key-nav_home .stButton > button[kind="primary"] p, .st-key-nav_claims .stButton > button[kind="primary"] p, .st-key-nav_actuarial .stButton > button[kind="primary"] p, .st-key-nav_radar .stButton > button[kind="primary"] p {
+.st-key-nav_home .stButton > button[kind="primary"] p, .st-key-nav_claims .stButton > button[kind="primary"] p, .st-key-nav_actuarial .stButton > button[kind="primary"] p, .st-key-nav_radar .stButton > button[kind="primary"] p, .st-key-nav_library .stButton > button[kind="primary"] p {
     font-weight: 700 !important;
     text-decoration: underline;
     text-decoration-color: #3D3FE0;
     text-decoration-thickness: 2px;
     text-underline-offset: 6px;
 }
-.st-key-nav_home .stButton > button[kind]:hover p, .st-key-nav_claims .stButton > button[kind]:hover p, .st-key-nav_actuarial .stButton > button[kind]:hover p, .st-key-nav_radar .stButton > button[kind]:hover p {
+.st-key-nav_home .stButton > button[kind]:hover p, .st-key-nav_claims .stButton > button[kind]:hover p, .st-key-nav_actuarial .stButton > button[kind]:hover p, .st-key-nav_radar .stButton > button[kind]:hover p, .st-key-nav_library .stButton > button[kind]:hover p {
     color: #3D3FE0 !important;
 }
 .st-key-nav_signin .stButton > button[kind], .st-key-nav_signout .stButton > button[kind] {
@@ -746,7 +748,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-nav_col1, nav_col2, nav_col3, nav_col4, nav_radar, nav_col5, nav_col6 = st.columns([2.2, 0.9, 0.95, 1.05, 0.9, 1.6, 1.0])
+nav_col1, nav_col2, nav_col3, nav_col4, nav_radar, nav_lib, nav_col5, nav_col6 = st.columns(
+    [2.0, 0.9, 0.95, 1.05, 0.9, 0.95, 1.4, 1.0])
 
 with nav_col1:
     st.markdown('<div class="navbar-brand" style="padding-top: 6px;"><svg width="26" height="26" viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="16" cy="16" r="11" stroke="#121318" stroke-width="3.2"/><path d="M5 16a11 11 0 0 1 11-11" stroke="#3D3FE0" stroke-width="3.2" stroke-linecap="round"/><circle cx="16" cy="16" r="3.4" fill="#3D3FE0"/></svg>Roundtable</div>', unsafe_allow_html=True)
@@ -776,6 +779,12 @@ with nav_radar:
     if st.session_state.is_authenticated and st.button("Radar", key="nav_radar", use_container_width=True,
                                                        type=("primary" if st.session_state.current_view == "radar" else "secondary")):
         st.session_state.current_view = "radar"
+        st.rerun()
+
+with nav_lib:
+    if st.session_state.is_authenticated and st.button("Library", key="nav_library", use_container_width=True,
+                                                       type=("primary" if st.session_state.current_view == "library" else "secondary")):
+        st.session_state.current_view = "library"
         st.rerun()
 
 with nav_col5:
@@ -906,6 +915,12 @@ elif st.session_state.current_view == "home":
         st.rerun()
 
     render_home(_go_workspace)
+
+# ===========================================================================
+# VIEW: LIBRARY (risk patterns, competitor and regulatory sources)
+# ===========================================================================
+elif st.session_state.current_view == "library":
+    render_library(lambda method, path, **kw: _api_call(method, path, **kw))
 
 # ===========================================================================
 # VIEW: MARKET RADAR
@@ -1113,7 +1128,8 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                          "Launch gate"] if is_actuarial_view else
                         ["Claims review", "Claims readiness", "Policy wording", "Handling guideline", "Test scenarios",
                          "Customer letters", "Launch operations", "Launch gate"]) + [
-                "Competitor intelligence", "Underwriting review", "Regulatory compliance", "Live web research"]
+                "Competitor intelligence", "Underwriting review", "Regulatory compliance", "Live web research",
+                "Audit log"]
             st.sidebar.markdown('<div class="rt-side-head" style="margin-top:1.4rem">Brief sections</div>',
                                 unsafe_allow_html=True)
             section_key = f"brief_section_{'actuarial' if is_actuarial_view else 'claims'}"
@@ -1454,6 +1470,8 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                                   "Monitoring": render_monitoring, "Parametric": render_parametric}
             if section == "Company assumptions":
                 render_company_settings(lambda method, path, **kw: _api_call(method, path, **kw))
+            if section == "Audit log":
+                render_audit_log(brief, lambda method, path, **kw: _api_call(method, path, **kw))
             if section in actuarial_sections:
                 actuarial_sections[section](
                     brief, lambda method, path, bid=brief["id"], **kw: _guideline_call(method, f"{bid}/{path}", **kw))

@@ -117,6 +117,7 @@ def login(email: str, password: str, role: str) -> dict:
             locked = (_now() + timedelta(minutes=LOCKOUT_MINUTES)).isoformat() if attempts >= MAX_FAILED_ATTEMPTS else None
             conn.execute("UPDATE users SET failed_attempts = ?, locked_until = ? WHERE email = ?",
                          (0 if locked else attempts, locked, email))
+            conn.commit()  # the connection's context manager rolls back when we raise
             raise invalid
         if user["role"] != role:
             raise AuthError(403, f"This account is not authorised for the {role} workspace.")
