@@ -37,25 +37,27 @@ NEWS_DAYS = 30
 NEWS_PER_TOPIC = 8
 RESURFACE_POINTS = 15  # a dismissed signal comes back only if its score rises this much
 
-# Risk topics watched on every scan: news query, the claims pattern it maps to, and the product idea
+# Risk topics watched on every scan: news query, the claims pattern it maps to, and the product idea.
+# Roundtable serves the Indian market: queries use Indian framing and every search adds NEWS_MARKET.
+NEWS_MARKET = "India"
 WATCHLIST: List[Dict[str, str]] = [
     {"id": "ev_battery_fire", "label": "EV battery fires", "tag": "battery_fault",
-     "query": "electric scooter e-bike EV battery fire explosion",
+     "query": "electric scooter EV battery fire explosion",
      "idea": "EV Battery Fire & Thermal Runaway Cover"},
     {"id": "vehicle_theft", "label": "Vehicle theft wave", "tag": "theftentire",
-     "query": "vehicle theft surge cars stolen", "idea": "Stolen Vehicle Replacement Cover"},
-    {"id": "parts_theft", "label": "Catalytic converter & parts theft", "tag": "theftparts",
-     "query": "catalytic converter theft parts stolen from cars", "idea": "Vehicle Parts Theft Cover"},
-    {"id": "water_damage", "label": "Burst pipes & home water damage", "tag": "waterdamage",
-     "query": "burst pipe water damage homes", "idea": "Home Water Damage Rider"},
+     "query": "vehicle theft cases rise cars two-wheelers stolen", "idea": "Stolen Vehicle Replacement Cover"},
+    {"id": "parts_theft", "label": "Vehicle parts & battery theft", "tag": "theftparts",
+     "query": "car parts battery theft stolen from parked vehicles", "idea": "Vehicle Parts Theft Cover"},
+    {"id": "water_damage", "label": "Monsoon flooding & home water damage", "tag": "waterdamage",
+     "query": "monsoon flooding waterlogging water damage homes", "idea": "Home Water Damage Rider"},
     {"id": "vehicle_flood", "label": "Flooded vehicles", "tag": "vehicleflood",
-     "query": "flooding cars damaged flood water vehicles", "idea": "Vehicle Flood Damage Cover"},
+     "query": "cars submerged flood waterlogging vehicles damaged", "idea": "Vehicle Flood Damage Cover"},
     {"id": "hail", "label": "Hailstorms", "tag": "hail",
-     "query": "hailstorm damage roofs homes", "idea": "Hail Damage Roof Cover"},
-    {"id": "mold", "label": "Home mold", "tag": "mold",
-     "query": "mold damage homes after leaks", "idea": "Home Mold Remediation Cover"},
+     "query": "hailstorm damage cars homes", "idea": "Hail Damage Cover"},
+    {"id": "mold", "label": "Seepage, dampness & mould", "tag": "mold",
+     "query": "seepage dampness mold damage homes monsoon", "idea": "Home Seepage & Mould Cover"},
     {"id": "workplace_strain", "label": "Workplace strain injuries", "tag": "strain",
-     "query": "workplace strain injuries workers rising", "idea": "Workplace Strain Injury Cover"},
+     "query": "workplace injuries factory workers accidents rising", "idea": "Workplace Injury Cover"},
 ]
 
 # Broad searches that discover risks nobody put on the watchlist; hits are mapped to claims patterns
@@ -63,7 +65,7 @@ DISCOVERY_QUERIES = [
     "insurance claims surge rising losses",
     "insurers stop covering exclude new risk",
     "spike in incidents damage injuries reported this month",
-    "insurance gap uninsured losses homeowners drivers",
+    "insurance gap uninsured losses homes vehicles",
 ]
 DISCOVERY_MIN_PUBLISHERS = 2
 MAX_DISCOVERED = 4
@@ -229,7 +231,7 @@ def fetch_news(topic: Dict[str, str]) -> List[Dict[str, Any]]:
     from tavily import TavilyClient
 
     client = TavilyClient(api_key=_tavily_key())
-    response = client.search(query=topic["query"], topic="news", days=NEWS_DAYS, max_results=NEWS_PER_TOPIC,
+    response = client.search(query=f"{topic['query']} {NEWS_MARKET}", topic="news", days=NEWS_DAYS, max_results=NEWS_PER_TOPIC,
                              search_depth="basic", include_answer=False, exclude_domains=_EXCLUDED_DOMAINS,
                              timeout=20)
     keywords = _keywords(topic)
@@ -550,7 +552,7 @@ def discover_topics() -> List[Dict[str, Any]]:
 
     def _search(q):
         try:
-            r = client.search(query=q, topic="news", days=NEWS_DAYS, max_results=10, search_depth="basic",
+            r = client.search(query=f"{q} {NEWS_MARKET}", topic="news", days=NEWS_DAYS, max_results=10, search_depth="basic",
                               include_answer=False, exclude_domains=_EXCLUDED_DOMAINS, timeout=20)
             return r.get("results", []) if isinstance(r, dict) else []
         except Exception as e:

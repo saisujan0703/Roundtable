@@ -56,8 +56,8 @@ def _clean(f: Dict[str, Any]) -> Dict[str, Any]:
     summary = str(f.get("summary") or "").strip()[:3000]
     url = str(f.get("url") or "").strip()[:500]
     if len(name) < 2:
-        raise SourceError("Name the " + ("carrier (e.g. 'Allstate')." if kind == "competitor"
-                                          else "regulator (e.g. 'California Department of Insurance')."))
+        raise SourceError("Name the " + ("insurer (e.g. 'ICICI Lombard')." if kind == "competitor"
+                                          else "regulator (e.g. 'IRDAI')."))
     if len(title) < 3:
         raise SourceError("Give the " + ("product or page title." if kind == "competitor" else "regulation or bulletin title."))
     if len(summary) < MIN_SUMMARY:
@@ -160,8 +160,8 @@ def search_web(query: str, source_type: str, known_urls: List[str], max_results:
         from tavily import TavilyClient
     except ImportError:
         return {"configured": False, "results": [], "message": "The 'tavily-python' package is not installed."}
-    suffix = (" insurance coverage policy endorsement" if source_type == "competitor"
-              else " insurance regulation bulletin department of insurance NAIC")
+    suffix = (" insurance India add-on cover policy wording" if source_type == "competitor"
+              else " India IRDAI regulation circular notification")
     try:
         res = TavilyClient(api_key=key).search(query=query + suffix, search_depth="advanced", max_results=max_results)
     except Exception as e:

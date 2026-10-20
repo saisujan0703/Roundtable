@@ -64,18 +64,18 @@ def render_landscape(brief: Dict[str, Any], api: Call) -> None:
         return
     land = data.get("landscape")
     st.markdown("#### Market landscape")
-    st.caption("Carriers offering this kind of cover, found on the open web: what each covers, what it costs and how "
-               "the carrier is rated. A fact is shown only when its quote was found word for word on the linked page.")
+    st.caption("Insurers offering this kind of cover, found on the open web: what each covers, what it costs and how "
+               "the insurer is rated. A fact is shown only when its quote was found word for word on the linked page.")
     c1, c_region, c2 = st.columns([2.4, 1.1, 1])
     if land:
         c1.caption(f"Last searched {land['generated_at'].replace('T', ' ').rstrip('Z')} UTC · "
-                   f"{land.get('region_label', 'United States')} · "
+                   f"{land.get('region_label', 'India')} · "
                    f"{len(land['carriers'])} carriers · {len(land['sources'])} pages read"
                    + (f" · searched as: {', '.join(land['terms'])}" if land.get("terms") else ""))
     if not data.get("search_configured"):
         c1.info("Web search is off: set TAVILY_API_KEY in .env and restart the backend to scan the market.")
-    regions = data.get("regions") or {"US": "United States"}
-    current = (land or {}).get("region", "US")
+    regions = data.get("regions") or {"IN": "India"}
+    current = (land or {}).get("region", "IN")
     region = c_region.selectbox("Market", list(regions), format_func=regions.get,
                                 index=list(regions).index(current) if current in regions else 0,
                                 key=f"land_region_{brief['id']}", label_visibility="collapsed")
@@ -108,7 +108,7 @@ def render_landscape(brief: Dict[str, Any], api: Call) -> None:
                "carrier. Carriers that sell only a broader product are left out.")
     st.caption("Prices depend on the customer, so few carriers publish one. Each price is labelled with what it is; "
                "an empty cell means no reliable published price was found. "
-               + RATING_HELP.get(land.get("region", "US"), ""))
+               + RATING_HELP.get(land.get("region", "IN"), ""))
 
     for c in carriers:
         with st.expander(f"{c['carrier']} — evidence"):

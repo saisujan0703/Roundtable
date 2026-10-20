@@ -73,7 +73,7 @@ def get_sources_data(sources_dir: Path | str = SOURCES_DIR) -> List[Dict[str, An
             f"Summary: {item.get('summary')}"
         )
         documents.append({
-            # Body plus title: one body (e.g. NAIC) publishes several sources
+            # Body plus title: one body (e.g. IRDAI) publishes several sources
             "id": item.get("_id") or f"reg_{item.get('regulatory_body', '').lower().replace(' ', '_')[:20]}_"
                                     f"{re.sub(r'[^a-z0-9]+', '_', item.get('regulation_title', '').lower())[:40]}",
             "text": doc_text,
@@ -215,8 +215,8 @@ if __name__ == "__main__":
 
     test_queries = [
         "EV battery thermal degradation warranty coverage",
-        "NAIC underwriting bulletin lithium-ion fire hazard",
-        "Homeowners burst pipe water damage rider",
+        "IRDAI claim settlement surveyor timelines",
+        "Bharat Griha Raksha bursting of water pipes flood",
     ]
 
     for q in test_queries:

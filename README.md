@@ -11,7 +11,7 @@ A product manager describes an idea ("EV owners keep getting denied for battery 
 **Product decision brief**
 - Matches the idea to a risk pattern in the claims data. When the product has no history of its own, it uses related patterns as proxies.
 - Analyses frequency, severity, trend, loss ratio, coverage-gap denials, reserve development and claim handling, all computed in Python and SQL.
-- Pulls competitor and regulatory evidence from a curated library and live web research. Every qualitative statement must cite a retrieved source.
+- Pulls competitor and regulatory evidence from a curated library of Indian insurers and regulators (IRDAI, MoRTH, CERT-In and others) and live web research on Indian news, government, research and insurer sites. Every qualitative statement must cite a retrieved source.
 - Verifies model-written text after generation: numbers, citations, trend wording and named carriers or regulators.
 - Flags conflicting evidence. One example: the claims data looks favourable while competitors withdrew similar cover after losses.
 
@@ -31,7 +31,7 @@ A product manager describes an idea ("EV owners keep getting denied for battery 
 
 **Across the platform**
 - Go/no-go launch gate with sign-offs from Claims, Claims Legal, Compliance, Product, Actuarial and Finance.
-- Market Radar: news watch that proposes product opportunities, backed by claims evidence.
+- Market Radar: Indian news watch that proposes product opportunities, backed by claims evidence.
 - Library: custom keyword risk patterns and user-added competitor and regulatory sources, with reviewed web search.
 - Sign-in with roles, account lockout, and an append-only audit log of every change.
 - Idea assistant with voice input (local speech-to-text).
@@ -110,7 +110,7 @@ The suite checks the pricing, reserving and business-plan maths against hand cal
 backend/     FastAPI app and all analytics, pricing, LLM, verification and workflow modules
 frontend/    Streamlit app (app.py) and one panel module per section
 data/        Synthetic data generator
-sources/     Curated competitor and regulatory sources, and the IRDAI claim-settlement rules
+sources/     Curated Indian competitor and regulatory sources, and the IRDAI claim-settlement rules
 docs/        Guidewire reference: entity data dictionaries, typelist catalogs, guides
 tests/       pytest suite
 ```

@@ -194,8 +194,14 @@ def check_trend_wording(text: str, annual_trend_pct: Optional[float], significan
 
 
 def _known_names() -> List[str]:
-    """Carriers and regulators Roundtable knows by name: curated sources plus major US carriers."""
-    names = {"Progressive", "GEICO", "State Farm", "Allstate", "Liberty Mutual", "Travelers", "Nationwide", "Farmers",
+    """Insurers and regulators Roundtable knows by name: curated sources, Indian insurers and regulators, and major
+    US carriers (still named in older briefs and US web results)."""
+    names = {"ICICI Lombard", "HDFC ERGO", "Bajaj Allianz", "Bajaj General", "Tata AIG", "Go Digit", "Digit Insurance",
+             "Acko", "SBI General", "New India Assurance", "United India Insurance", "Oriental Insurance",
+             "National Insurance", "Reliance General", "IFFCO Tokio", "Cholamandalam MS", "Royal Sundaram",
+             "Zurich Kotak", "Universal Sompo", "Liberty General", "Shriram General", "Future Generali", "GIC Re",
+             "MoRTH", "DGCA", "CERT-In", "MeitY", "NDMA", "IIB", "Insurance Ombudsman", "Bima Bharosa",
+             "Progressive", "GEICO", "State Farm", "Allstate", "Liberty Mutual", "Travelers", "Nationwide", "Farmers",
              "USAA", "Chubb", "The Hartford", "Erie Insurance", "American Family", "AIG", "Zurich", "Lemonade",
              "Root Insurance", "Hiscox", "Plymouth Rock", "Tesla", "Swiss Re", "Munich Re", "Allianz", "AXA",
              "NAIC", "NHTSA", "FEMA", "NFPA", "IIHS", "NICB", "OSHA", "CPSC", "IRDAI"}

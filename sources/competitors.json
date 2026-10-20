@@ -1,58 +1,74 @@
 [
   {
-    "competitor_name": "Plymouth Rock Assurance",
-    "product_name": "Auto insurance — battery replacement position",
-    "coverage_summary": "Car insurance does not cover battery replacement for normal wear and tear, because batteries are treated as consumable items. Collision or comprehensive coverage may pay for battery damage or theft from a covered loss such as an accident. Manufacturer warranties cover battery defects but exclude accident damage, which insurance handles instead. This is the market's standard EV battery gap: degradation and defects sit outside auto coverage.",
-    "source_url": "https://www.plymouthrock.com/resources/does-car-insurance-cover-a-battery-replacement",
-    "date_collected": "2026-10-03",
+    "competitor_name": "Zurich Kotak General Insurance",
+    "product_name": "Electric car insurance — battery protection and EV add-ons",
+    "coverage_summary": "Accident damage to an EV's battery is generally covered under a comprehensive private car policy, but water ingress, electrical surge and similar risks are where a dedicated battery protection add-on applies; the home charger sits outside the car, where a standard motor policy does not reach. EV add-ons sold in the Indian market include battery protection, motor breakdown, charging equipment damage and EV roadside assistance (immobilisation from battery malfunction or running out of charge). Charging with non-OEM equipment can trigger battery-cover exclusions. Third-party premiums for private electric cars carry a mandated 15% discount, while own-damage premiums can be higher because the battery concentrates the car's value.",
+    "source_url": "https://www.zurichkotak.com/knowledge-center/car-insurance/best-add-on-covers-for-electric-car-insurance-2026",
+    "date_collected": "2026-10-20",
     "source_type": "competitor"
   },
   {
-    "competitor_name": "Tesla (as reported by Insurance.com)",
-    "product_name": "Tesla high-voltage battery — insurance vs warranty",
-    "coverage_summary": "Collision pays for EV battery damage from an accident and comprehensive pays for fire, flood, theft and other named perils, treating the battery like an engine in a conventional car. Gradual loss of battery capacity is not covered by insurance. Tesla's battery warranty runs 8 years if capacity drops to 70% or below, with mileage limits of 100,000 to 150,000 miles by model, and excludes collision damage and negligence.",
-    "source_url": "https://www.insurance.com/auto-insurance/tesla-insurance/tesla-battery-replacement-cost/",
-    "date_collected": "2026-10-03",
+    "competitor_name": "ICICI Lombard (as reported by Outlook Money)",
+    "product_name": "EV battery protection add-on (motor own damage)",
+    "coverage_summary": "ICICI Lombard's battery add-on covers consequential losses to the traction battery (the battery that drives the vehicle, not the starting battery) and the drive or electric motor. Its chief of underwriting and claims says consequential losses due to short circuit or seepage of water are covered, subject to the admissibility of the claim under the policy terms. Without the add-on, a major battery failure can mean replacing the whole unit at the owner's cost. General wear and tear is typically not covered, and EV add-on exclusions differ from insurer to insurer. Published 21 November 2023, updated 6 September 2024.",
+    "source_url": "https://www.outlookmoney.com/insurance/ev-motor-insurance-here-are-the-benefits-of-having-a-battery-secure-add-on-cover-for-your-ev",
+    "date_collected": "2026-10-20",
     "source_type": "competitor"
   },
   {
-    "competitor_name": "Amica Mutual",
-    "product_name": "Water backup coverage endorsement (homeowners)",
-    "coverage_summary": "Water backup is not in the standard homeowners policy but can be added as an optional endorsement covering direct physical damage when water backs up through sewers or drains or overflows from a sump pump, including repairs, damaged personal property and cleanup. Amica states that water backup and flood insurance address different causes of loss, so the endorsement does not cover flood.",
-    "source_url": "https://www.amica.com/en/resources/home/coverage/water-backup-coverage.html",
-    "date_collected": "2026-10-03",
+    "competitor_name": "Royal Sundaram General Insurance",
+    "product_name": "EV Protect add-on (press release, February 2026)",
+    "coverage_summary": "EV Protect covers repair or replacement of lithium-ion batteries, electric motors, inverters and battery management systems after a power surge, thermal runaway, water ingress or short circuit, including flood-related failures of essential EV systems. It adds standalone cover for wall-mounted and portable chargers, cables and adaptors. It is for privately used battery electric vehicles, attaches to the Private Car Package, long-term/bundled and standalone own-damage policies, and is linked to the vehicle, not the owner. Cover depends on following OEM-recommended servicing and using authorised charging equipment.",
+    "source_url": "https://www.latestly.com/agency-news/business-news-drive-electric-with-confidence-royal-sundarams-ev-protect-add-on-now-available-for-comprehensive-coverage-7331243.html/amp",
+    "date_collected": "2026-10-20",
     "source_type": "competitor"
   },
   {
-    "competitor_name": "Amica Mutual",
-    "product_name": "Solar panels under home insurance",
-    "coverage_summary": "Roof-mounted solar panels and solar shingles are covered by standard home insurance; ground-mounted systems may fall under other structures coverage. Coverage is for sudden physical damage such as wind, hail and theft, and excludes mechanical breakdown, wear and tear and poor installation. Homeowners should raise dwelling limits for the system's added value.",
-    "source_url": "https://www.amica.com/en/resources/home/coverage/solar-panels.html",
-    "date_collected": "2026-10-03",
+    "competitor_name": "Tata AIG General Insurance",
+    "product_name": "Engine Secure add-on (engine protection for flood and water ingress)",
+    "coverage_summary": "Standard car insurance excludes damage from water ingress and lubricant leakage to the engine and transmission as avoidable, consequential losses, so a hydrostatic lock after driving through a waterlogged road is not covered by the standard own-damage policy. The optional Engine Secure add-on covers repair and replacement of internal engine parts (pistons, connecting rods, crankshafts, valves), the gearbox and differential after water ingress or oil leakage, plus consumables such as engine oil and gearbox oil and machining and labour. Example repair cost given: Rs 1.2 lakh, rising to about Rs 8 lakh if a delayed repair forces engine replacement. Most relevant in flood-prone states such as UP, Bihar, Punjab, Assam and West Bengal.",
+    "source_url": "https://www.tataaig.com/knowledge-center/car-insurance/engine-protection-in-car-insurance",
+    "date_collected": "2026-10-20",
     "source_type": "competitor"
   },
   {
-    "competitor_name": "State Farm",
-    "product_name": "Personal Articles Policy (scheduled valuables)",
-    "coverage_summary": "Scheduled coverage for specific valuables such as jewelry, electronics, collectibles and musical instruments against theft and accidental damage, with no deductible and worldwide protection. Unlike homeowners policies, which impose special dollar limits on these categories for theft, each item has its own specified limit.",
-    "source_url": "https://www.statefarm.com/insurance/personal-articles-policy",
-    "date_collected": "2026-10-03",
+    "competitor_name": "New India Assurance",
+    "product_name": "New India Bharat Griha Raksha Policy (standard home insurance, UIN IRDAN190RP0010V02202021)",
+    "coverage_summary": "The IRDAI standard home policy covers the home building and contents against fire, explosion, lightning, earthquake, storm, cyclone, flood and inundation, subsidence and landslide, impact damage, riot and malicious damage, terrorism, bursting or overflowing of water tanks, apparatus and pipes, and leakage from sprinklers. Theft is covered only within 7 days of, and proximately caused by, one of those insured events, so ordinary burglary needs separate cover. General contents are covered automatically at 20% of the building sum insured up to Rs 10 lakh; valuables need agreed-value cover. Exclusions include damage to an electrical or electronic machine by short circuiting, over-running or leakage of electricity, wear and tear, and consequential loss.",
+    "source_url": "https://www.newindia.co.in/assets/docs/know-more/fire/new-india-bharat-griha-raksha-policy/Prospectus.pdf",
+    "date_collected": "2026-10-20",
     "source_type": "competitor"
   },
   {
-    "competitor_name": "SkyWatch",
-    "product_name": "Commercial drone insurance (liability and hull)",
-    "coverage_summary": "Third-party liability for bodily injury and property damage, plus hull coverage for the drone and equipment, sold hourly through a mobile app, monthly or annually, with clients named as additional insureds at no extra fee. Aimed at Part 107 commercial pilots in construction, mapping, agriculture and public safety, with fleet insurance for operators of multiple drones.",
-    "source_url": "https://www.skywatch.ai/drone-insurance",
-    "date_collected": "2026-10-03",
+    "competitor_name": "Bajaj General Insurance",
+    "product_name": "Rooftop solar panels under home insurance",
+    "coverage_summary": "Home insurance in India can cover permanently installed rooftop solar systems against fire, storms, cyclones, floods, lightning, theft and impact damage, either built into the policy or as an add-on, up to a specified limit. Most insurers exclude normal wear and tear, poor maintenance or negligence, manufacturing defects (left to the manufacturer's warranty), faulty installation or workmanship, deliberate damage, pre-existing damage and unauthorised modifications.",
+    "source_url": "https://www.bajajgeneralinsurance.com/blog/home-insurance-articles/solar-panel-coverage-under-home-insurance-in-india.html",
+    "date_collected": "2026-10-20",
     "source_type": "competitor"
   },
   {
-    "competitor_name": "Global Aerospace",
-    "product_name": "Drone and fleet drone insurance",
-    "coverage_summary": "Third-party liability for bodily injury and property damage, hull damage cover for the aircraft, and payload coverage for sensors and equipment that may be worth more than the drone. Fleet drone insurance for enterprises gives blanket liability with automatic cover for new drones added to the fleet under one policy.",
-    "source_url": "https://www.global-aero.com/drone-insurance-guide/",
-    "date_collected": "2026-10-03",
+    "competitor_name": "ICICI Lombard (as reported by Life Insurance International)",
+    "product_name": "Comprehensive remotely piloted aircraft (drone) insurance",
+    "coverage_summary": "Covers six risk types for drone operators: hull (accidental loss or damage including theft and disappearance, excluding wear and tear), payload and equipment, personal accident and medical cover for the authorised operator injured in India, and third-party liability for bodily injury and property damage caused by the drone. Nine add-ons, sold online with pay-per-use terms of one day, one week, one month or a year.",
+    "source_url": "https://lifeinsuranceinternational.com/news/icici-lombard-enters-the-drone-insurance-space",
+    "date_collected": "2026-10-20",
+    "source_type": "competitor"
+  },
+  {
+    "competitor_name": "New India Assurance (as reported by Outlook Business)",
+    "product_name": "Drone (UAS/RPAS) insurance",
+    "coverage_summary": "Covers damage to the drone and its payload and third-party liability, with beyond-visual-line-of-sight and night-flying endorsements and over 15 add-ons, for owners, operators and manufacturers. The report notes HDFC ERGO started drone cover in June 2020, ICICI Lombard in August 2021, Tata AIG in October 2021 and Bajaj Allianz in November 2021, all offering hull and liability for commercial use permitted by the DGCA.",
+    "source_url": "https://www.outlookbusiness.com/news/new-india-assurance-launches-drone-protection-plan-news-247467",
+    "date_collected": "2026-10-20",
+    "source_type": "competitor"
+  },
+  {
+    "competitor_name": "Bajaj General Insurance",
+    "product_name": "Individual cyber insurance (UPI, banking and online fraud)",
+    "coverage_summary": "Pays an agreed amount for direct financial loss from phishing or email spoofing and unauthorised access to the insured's accounts; covers identity theft (lost wages, credit monitoring, prosecution costs), cyber bullying and stalking, cyber extortion, malware damage to devices and data restoration, and social-media liability, with no sub-limits and family cover for extra premium. Premium for a Rs 50,000 sum insured starts at Rs 365 a year excluding taxes. War and terrorism, including cyber terrorism, are excluded.",
+    "source_url": "https://bajajallianz.com/liability-insurance/cyber-insurance.html",
+    "date_collected": "2026-10-20",
     "source_type": "competitor"
   }
 ]

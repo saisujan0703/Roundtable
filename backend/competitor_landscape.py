@@ -393,12 +393,15 @@ def _terms(title: str, context: str, llm: LLMFn) -> Dict[str, Any]:
         return {"terms": [plain], "market": "both", "from_llm": False}
 
 
+DEFAULT_REGION = "IN"   # Roundtable serves the Indian market; the other regions stay available
+
+
 def build(title: str, context: str = "", search: Optional[SearchFn] = None,
-          llm: Optional[LLMFn] = None, region: str = "US") -> Dict[str, Any]:
+          llm: Optional[LLMFn] = None, region: str = DEFAULT_REGION) -> Dict[str, Any]:
     """The landscape for a product (title + the PM's description) in one market (REGIONS key). *search* and *llm*
     default to Tavily and the configured LLM."""
     title = " ".join((title or "").split())[:150]
-    region = region if region in REGIONS else "US"
+    region = region if region in REGIONS else DEFAULT_REGION
     r = REGIONS[region]
     now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
     if search is None:

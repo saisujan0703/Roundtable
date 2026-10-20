@@ -9,8 +9,8 @@ sources, credibility-weighted:
              and state, an industry-loss-style index = event incurred per exposure in that state and year ($).
              An event-state "triggers" when its index is at or above the trigger. Annual trigger rate per state =
              triggering event-states / years observed. A few years hold only a handful of events, so
-  hazard     the actuary enters annual trigger probabilities per state from a hazard source (NOAA SPC hail
-             reports, FEMA flood zones, a wildfire or catastrophe model, a parametric vendor's index history),
+  hazard     the actuary enters annual trigger probabilities per state from a hazard source (IMD rainfall
+             or cyclone records, NDMA flood-hazard maps, a catastrophe model, a parametric vendor's index history),
              with the source cited. States without an entry use the burn rate.
   blend      p = Z x burn + (1 - Z) x hazard, Z = sqrt(events / FULL_CREDIBILITY_EVENTS)
 

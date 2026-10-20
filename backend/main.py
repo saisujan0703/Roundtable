@@ -1916,7 +1916,7 @@ def get_competitor_landscape(brief_id: int):
 
 
 class LandscapeRequest(BaseModel):
-    region: Literal["US", "IN", "UK", "GLOBAL"] = "US"
+    region: Literal["US", "IN", "UK", "GLOBAL"] = competitor_landscape.DEFAULT_REGION
 
 
 @app.post("/api/briefs/{brief_id}/competitor-landscape")
@@ -1927,7 +1927,7 @@ def refresh_competitor_landscape(brief_id: int, req: Optional[LandscapeRequest] 
     if not row:
         raise HTTPException(status_code=404, detail=f"Brief #{brief_id} not found")
     context = (json.loads(row["brief_json"] or "{}").get("idea_context") or "")[:1200]
-    result = competitor_landscape.build(row["title"], context, region=(req.region if req else "US"))
+    result = competitor_landscape.build(row["title"], context, region=(req.region if req else competitor_landscape.DEFAULT_REGION))
     if not result.get("configured"):
         raise HTTPException(status_code=400, detail=result["message"])
     with get_connection() as conn:

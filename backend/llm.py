@@ -80,10 +80,10 @@ STRICT OPERATING RULES:
 # ---------------------------------------------------------------------------
 TAG_SEMANTIC_MAP: Dict[str, List[str]] = {
     "battery_fault": ["battery", "ev", "electric vehicle", "high-voltage", "thermal runaway", "charging", "lithium", "cell"],
-    "theftentire": ["theft", "stolen", "carjacking", "vehicle theft", "stolen vehicle", "hijack"],
-    "theftparts": ["catalytic", "converter", "parts theft", "wheel theft"],
-    "waterdamage": ["water", "leak", "pipe", "burst pipe", "sewage", "freeze", "plumbing", "water damage", "overflow"],
-    "vehicleflood": ["flood", "submerged", "vehicle flood", "flooded car"],
+    "theftentire": ["theft", "stolen", "carjacking", "vehicle theft", "stolen vehicle", "hijack", "two-wheeler theft", "bike theft"],
+    "theftparts": ["catalytic", "converter", "parts theft", "wheel theft", "battery theft", "parts stolen"],
+    "waterdamage": ["water", "leak", "pipe", "burst pipe", "sewage", "freeze", "plumbing", "water damage", "overflow", "seepage"],
+    "vehicleflood": ["flood", "submerged", "vehicle flood", "flooded car", "waterlogged", "hydrostatic"],
     "slipfall": ["slip", "slip and fall", "slip & fall", "trip", "premises", "walkway", "sidewalk", "customer fall"],
     "workplace_fall": ["workplace fall", "employee fall", "fall from height", "ladder"],
     "strain": ["strain", "sprain", "ergonomic", "lifting", "repetitive", "back injury", "workplace injury", "musculoskeletal", "overexertion"],
@@ -95,10 +95,10 @@ TAG_SEMANTIC_MAP: Dict[str, List[str]] = {
     "glassbreakage": ["glass", "windshield", "windscreen", "adas", "calibration"],
     "hail": ["hail", "roof", "hailstorm"],
     "vehiclehail": ["vehicle hail", "car hail", "auto hail"],
-    "wind": ["wind", "hurricane", "storm", "tornado", "windstorm"],
+    "wind": ["wind", "hurricane", "storm", "tornado", "windstorm", "cyclone"],
     "burglary": ["burglary", "break-in", "robbery", "contents theft"],
-    "mold": ["mold", "mould", "fungi"],
-    "animalcollision": ["deer", "animal collision", "wildlife"],
+    "mold": ["mold", "mould", "fungi", "dampness"],
+    "animalcollision": ["deer", "animal collision", "wildlife", "stray cattle", "cattle"],
 }
 
 # Guidewire LossCause display names (04_CC_TYPELIST_CATALOG.md)
@@ -791,6 +791,37 @@ _COMPETITOR_MAX = 5
 _COMPETITOR_MIN = 3
 
 
+# Indian sources for live research (backend.llm.generate_external_market_evidence)
+INDIA_NEWS_DOMAINS = [
+    "economictimes.indiatimes.com", "livemint.com", "business-standard.com", "financialexpress.com",
+    "thehindubusinessline.com", "moneycontrol.com", "thehindu.com", "hindustantimes.com", "ndtvprofit.com",
+    "timesofindia.indiatimes.com", "outlookmoney.com", "cafemutual.com", "asiainsurancereview.com",
+    "insuranceasia.com", "insurancebusinessmag.com", "reuters.com", "autocarindia.com", "autocarpro.in",
+    "artemis.bm", "reinsurancene.ws",
+]
+INDIA_INDUSTRY_DOMAINS = [
+    "gicouncil.in", "cafemutual.com", "asiainsurancereview.com", "insuranceasia.com", "outlookmoney.com",
+    "swissre.com", "munichre.com", "mckinsey.com", "deloitte.com", "pwc.in", "ey.com", "kpmg.com", "bcg.com",
+]
+INDIA_GOV_DOMAINS = [
+    "irdai.gov.in", "policyholder.gov.in", "iib.gov.in", "morth.gov.in", "pib.gov.in", "data.gov.in",
+    "ncrb.gov.in", "ndma.gov.in", "mausam.imd.gov.in", "civilaviation.gov.in", "dgca.gov.in", "cert-in.org.in",
+    "meity.gov.in", "mnre.gov.in", "bis.gov.in", "labour.gov.in", "rbi.org.in", "indiacode.nic.in",
+    "egazette.gov.in", "iaisweb.org",
+]
+RESEARCH_DOMAINS = [
+    "actuariesindia.org", "niapune.org.in", "gicre.in", "swissre.com", "munichre.com", "genre.com",
+    "milliman.com", "ssrn.com", "arxiv.org", "sciencedirect.com", "mdpi.com", "springer.com",
+    "geneva-association.org", "icrier.org", "nipfp.org.in",
+]
+INDIA_INSURER_DOMAINS = [
+    "icicilombard.com", "hdfcergo.com", "bajajgeneralinsurance.com", "bajajallianz.com", "tataaig.com",
+    "godigit.com", "acko.com", "sbigeneral.in", "newindia.co.in", "uiic.co.in", "orientalinsurance.org.in",
+    "nationalinsurance.nic.co.in", "reliancegeneral.co.in", "iffcotokio.co.in", "cholainsurance.com",
+    "royalsundaram.in", "zurichkotak.com", "universalsompo.com", "libertyinsurance.in", "shriramgi.com",
+]
+
+
 def _prefer_product_pages(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Rank carrier product/coverage pages ahead of blog posts and explainers.
 
@@ -837,72 +868,48 @@ def generate_external_market_evidence(
         "openpr.com", "linkedin.com", "pinterest.com", "quora.com", "reddit.com",
     ]
 
-    # (query, category, source_type, extra Tavily params). include_domains is a restriction;
+    # (query, category, source_type, extra Tavily params). Searches are for the Indian market: queries name India
+    # and include_domains lists Indian publishers, regulators and insurers. include_domains is a restriction;
     # if it yields too few hits the search is retried unrestricted (see _search).
     queries_config = [
         (
-            f"{title} insurance market developments",
+            f"{title} insurance India market developments",
             "articles",
             "news",
-            {"topic": "news", "days": 365, "include_domains": [
-                "insurancejournal.com", "carriermanagement.com", "propertycasualty360.com",
-                "insurancebusinessmag.com", "artemis.bm", "reinsurancene.ws", "dig-in.com",
-                "claimsjournal.com", "repairerdrivennews.com", "ambest.com", "spglobal.com",
-                "reuters.com", "bloomberg.com", "wsj.com", "ft.com", "cnbc.com", "apnews.com",
-                "nytimes.com", "washingtonpost.com", "insurancethoughtleadership.com",
-            ]},
+            {"topic": "news", "days": 365, "include_domains": INDIA_NEWS_DOMAINS},
         ),
         (
-            # Market failures: carriers that launched similar cover and withdrew it, or lost money on it
+            # Market failures: insurers that launched similar cover and withdrew it, or lost money on it
             # (backend.conflicts checks these against a favourable claims picture)
-            f"{title} insurer withdrew discontinued exited market losses unprofitable",
+            f"{title} insurer India withdrew discontinued exited losses unprofitable",
             "articles",
             "news",
             {"topic": "news", "days": 1825},
         ),
         (
-            f"{title} insurance industry insights commentary",
+            f"{title} insurance India industry insights commentary",
             "blogs",
             "industry_report",
-            {"include_domains": [
-                "iii.org", "carriermanagement.com", "insurancejournal.com", "propertycasualty360.com",
-                "insurancethoughtleadership.com", "artemis.bm", "dig-in.com", "reinsurancene.ws",
-                "mckinsey.com", "deloitte.com", "pwc.com", "ey.com", "oliverwyman.com",
-            ]},
+            {"include_domains": INDIA_INDUSTRY_DOMAINS},
         ),
         (
-            f"{title} insurance regulation safety data statistics",
+            f"{title} India IRDAI regulation government safety data statistics",
             "government_data",
             "regulatory",
-            {"include_domains": [
-                "naic.org", "nhtsa.gov", "fema.gov", "noaa.gov", "bls.gov", "census.gov",
-                "treasury.gov", "federalregister.gov", "gao.gov", "ftc.gov", "cdc.gov",
-                "iihs.org", "nicb.org", "dfs.ny.gov", "insurance.ca.gov", "tdi.texas.gov",
-                "floir.gov", "eiopa.europa.eu", "iaisweb.org",
-            ]},
+            {"include_domains": INDIA_GOV_DOMAINS},
         ),
         (
-            f"{title} insurance actuarial research study",
+            f"{title} insurance India actuarial research study",
             "research_papers",
             "industry_report",
-            {"include_domains": [
-                "casact.org", "soa.org", "actuary.org", "swissre.com", "munichre.com",
-                "genre.com", "milliman.com", "verisk.com", "ssrn.com", "arxiv.org",
-                "sciencedirect.com", "mdpi.com", "springer.com", "nber.org", "rand.org",
-                "geneva-association.org", "iii.org",
-            ]},
+            {"include_domains": RESEARCH_DOMAINS},
         ),
         (
-            f"{title} insurance coverage endorsement product offered by carrier",
+            f"{title} insurance add-on cover policy offered by insurer India",
             "competitor_offering",
             "competitor",
             # Over-fetch so editorial pages can be dropped in favour of actual product pages
-            {"max_results": 10, "include_domains": [
-                "progressive.com", "geico.com", "statefarm.com", "allstate.com", "libertymutual.com",
-                "travelers.com", "nationwide.com", "farmers.com", "usaa.com", "chubb.com",
-                "thehartford.com", "erieinsurance.com", "amfam.com", "aig.com", "zurichna.com",
-                "cna.com", "selective.com", "lemonade.com", "root.com", "hiscox.com",
-            ]},
+            {"max_results": 10, "include_domains": INDIA_INSURER_DOMAINS},
         ),
     ]
 

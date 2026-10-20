@@ -111,8 +111,8 @@ def _source_form(key: str, initial: Dict[str, Any], submit: str) -> Optional[Dic
         kind = st.radio("Type", list(TYPE_LABEL), format_func=TYPE_LABEL.get, horizontal=True,
                         index=list(TYPE_LABEL).index(initial.get("source_type", "competitor")))
         c1, c2 = st.columns(2)
-        name = c1.text_input("Carrier or regulator", initial.get("name", ""),
-                             placeholder="Allstate / California Department of Insurance")
+        name = c1.text_input("Insurer or regulator", initial.get("name", ""),
+                             placeholder="ICICI Lombard / IRDAI")
         title = c2.text_input("Product, page or regulation title", initial.get("title", ""))
         url = st.text_input("Web address", initial.get("url", ""), placeholder="https://...")
         summary = st.text_area("Summary: what the source says, in your words", initial.get("summary", ""), height=130,

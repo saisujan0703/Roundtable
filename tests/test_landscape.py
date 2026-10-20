@@ -73,7 +73,7 @@ def test_verified_needs_the_exact_quote_and_its_numbers():
 
 
 def test_build_keeps_only_verified_facts():
-    out = cl.build("Gig Delivery Driver Auto Liability Gap Coverage", search=fake_search, llm=fake_llm)
+    out = cl.build("Gig Delivery Driver Auto Liability Gap Coverage", search=fake_search, llm=fake_llm, region="US")
     assert out["configured"] and out["ai_extraction"]
     by = {c["carrier"]: c for c in out["carriers"]}
     assert set(by) == {"Acme Mutual", "Zen Insurance"}                 # Ghost Co had nothing verifiable
@@ -100,7 +100,7 @@ def test_without_llm_lists_named_carriers_only():
     def search(params):
         return [{"url": "https://news.example.com/x", "title": "x",
                  "raw_content": "Progressive and GEICO both sell rideshare cover for delivery drivers in most states."}]
-    out = cl.build("Gig driver cover", search=search, llm=no_llm)
+    out = cl.build("Gig driver cover", search=search, llm=no_llm, region="US")
     assert not out["ai_extraction"]
     names = {c["carrier"] for c in out["carriers"]}
     assert {"Progressive", "GEICO"} <= names
@@ -115,7 +115,7 @@ def test_no_published_price_is_explained():
                 {"field": "product_name", "value": "Gig driver endorsement", "source": 1,
                  "quote": "Acme Mutual sells a gig driver endorsement"}]}]}
         return {"ratings": []}
-    out = cl.build("Gig cover", search=fake_search, llm=llm)
+    out = cl.build("Gig cover", search=fake_search, llm=llm, region="US")
     assert any("No published price" in n for n in out["notes"])
 
 
@@ -162,7 +162,7 @@ def test_searches_use_the_market_terms_and_skip_comparison_sites_for_commercial_
     def llm(system, user, name, schema):
         assert name == "report_terms" and "supply chain" in user.lower()
         return {"terms": ["contingent business interruption", "supply chain insurance"], "market": "commercial"}
-    cl.build("Commercial Supply Chain Disruption Cover", "Factories lose income when a supplier stops", search, llm)
+    cl.build("Commercial Supply Chain Disruption Cover", "Factories lose income when a supplier stops", search, llm, region="US")
     assert queries[0]["query"] == "contingent business interruption insurance"
     assert queries[0]["include_domains"] == cl.CARRIER_SITES
     assert not any(q.get("include_domains") == cl.COMPARISON_SITES for q in queries)
@@ -187,7 +187,7 @@ def test_carrier_site_fact_replaces_a_third_party_one():
              "quote": "Acme Mutual charges about $30 per month"},
             {"field": "price", "value": "$12 per month", "price_kind": "advertised", "source": 2,
              "quote": "gig cover starts at $12 per month"}]}]}
-    out = cl.build("Gig cover", search=search, llm=llm)
+    out = cl.build("Gig cover", search=search, llm=llm, region="US")
     price = out["carriers"][0]["price"]
     assert price["value"] == "$12 per month" and price["source_kind"] == "carrier website"
     assert out["terms"] == ["Gig"]
@@ -232,7 +232,7 @@ def test_india_market_uses_indian_insurers_and_irdai_ratings():
     assert [r["label"] for r in hdfc["ratings"]] == ["Claim settlement ratio"]
 
 
-def test_unknown_region_falls_back_to_us():
+def test_unknown_region_falls_back_to_india():
     out = cl.build("Gig cover", search=lambda p: [], llm=lambda *a: {"terms": ["gig"], "market": "personal"},
                    region="MARS")
-    assert out["region"] == "US"
+    assert out["region"] == "IN"

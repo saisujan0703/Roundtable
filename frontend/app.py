@@ -1511,7 +1511,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                     cat_all.append(item)
                     if "blog" in cat or "opinion" in cat or "perspective" in cat:
                         cat_blogs.append(item)
-                    elif "gov" in cat or "statut" in cat or "regulat" in cat or "doi" in cat or "naic" in cat or "nhtsa" in cat:
+                    elif "gov" in cat or "statut" in cat or "regulat" in cat or "irdai" in cat or "doi" in cat or "naic" in cat:
                         cat_gov.append(item)
                     elif "paper" in cat or "study" in cat or "whitepaper" in cat or "academic" in cat or "actuarial" in cat or "research" in cat:
                         cat_research.append(item)
@@ -1535,7 +1535,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                 with m_sub2:
                     st.metric("✍️ Blogs & Opinions", len(cat_blogs), help="Industry analysis & underwriting perspectives")
                 with m_sub3:
-                    st.metric("🏛️ Gov & Regulatory", len(cat_gov), help="Official safety registries, NAIC & DOI bulletins")
+                    st.metric("🏛️ Gov & Regulatory", len(cat_gov), help="IRDAI circulars, government data and safety regulators")
                 with m_sub4:
                     st.metric("📑 Research Papers", len(cat_research), help="Peer-reviewed actuarial studies & loss cost models")
                 with m_sub5:

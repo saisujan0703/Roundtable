@@ -133,7 +133,7 @@ class ExternalMarketEvidence(BaseModel):
         v_clean = v.strip().lower()
         if "blog" in v_clean or "opinion" in v_clean or "perspective" in v_clean or "commentary" in v_clean:
             return "blogs"
-        if "gov" in v_clean or "statut" in v_clean or "agency" in v_clean or "doi" in v_clean or "naic" in v_clean or "nhtsa" in v_clean or "cpsc" in v_clean or "osha" in v_clean or "federal" in v_clean or "state" in v_clean or "regulat" in v_clean:
+        if "gov" in v_clean or "statut" in v_clean or "agency" in v_clean or "irdai" in v_clean or "doi" in v_clean or "naic" in v_clean or "nhtsa" in v_clean or "cpsc" in v_clean or "osha" in v_clean or "federal" in v_clean or "state" in v_clean or "regulat" in v_clean:
             return "government_data"
         if "paper" in v_clean or "study" in v_clean or "whitepaper" in v_clean or "academic" in v_clean or "actuarial" in v_clean or "journal" in v_clean or "research" in v_clean:
             return "research_papers"
