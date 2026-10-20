@@ -66,11 +66,11 @@ class DirectionalEstimate(BaseModel):
     """
     range_low: float = Field(
         ...,
-        description="Lower bound of directional loss/premium estimate in USD."
+        description="Lower bound of directional loss/premium estimate in INR."
     )
     range_high: float = Field(
         ...,
-        description="Upper bound of directional loss/premium estimate in USD."
+        description="Upper bound of directional loss/premium estimate in INR."
     )
     label: str = Field(
         default="Directional estimate — not actuarial",

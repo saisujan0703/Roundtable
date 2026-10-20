@@ -39,6 +39,7 @@ from landscape_panel import render_landscape
 from radar_panel import render_radar
 from verification_badge import chip_html, render_verification
 from home_page import money_short, portfolio_stats, render_home, sculpture_svg
+from money import inr
 
 # Backend API Base URL
 API_BASE_URL = "http://127.0.0.1:8000/api"
@@ -575,7 +576,7 @@ def render_claims_kpis(kpis: Dict[str, Any]) -> None:
         return
 
     def money(v):
-        return "n/a" if v is None else f"${v:,.0f}"
+        return inr(v)
 
     def pct(v):
         return "n/a" if v is None else f"{v:.1f}%"
@@ -1173,7 +1174,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                     with m_col2:
                         st.metric(
                             label=est_label or "Directional Next-12-Month Incurred",
-                            value=f"\\${dir_est.get('range_low', 0):,.0f} – \\${dir_est.get('range_high', 0):,.0f}" if dir_est else "Not available",
+                            value=f"{inr(dir_est.get('range_low', 0))} – {inr(dir_est.get('range_high', 0))}" if dir_est else "Not available",
                             help="Directional estimate — not actuarial.",
                         )
                     with m_col3:
@@ -1192,7 +1193,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
 
                     st.markdown("#### Directional Loss Projection Range")
                     if dir_est:
-                        st.write(f"**Calculated Range:** \\${dir_est.get('range_low', 0):,.2f} to \\${dir_est.get('range_high', 0):,.2f}")
+                        st.write(f"**Calculated Range:** {inr(dir_est.get('range_low', 0), True)} to {inr(dir_est.get('range_high', 0), True)}")
                         st.caption(f"**Basis:** {dir_est.get('basis', 'Historical claim volumes and severity distribution.')}")
                     else:
                         st.info("No directional estimate available for this brief.")
@@ -1217,7 +1218,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                     with m_col2:
                         st.metric(
                             label=est_label or "Directional Annual Exposure",
-                            value=f"\\${dir_est.get('range_low', 0):,.0f} – \\${dir_est.get('range_high', 0):,.0f}" if dir_est else "Calculated",
+                            value=f"{inr(dir_est.get('range_low', 0))} – {inr(dir_est.get('range_high', 0))}" if dir_est else "Calculated",
                             help="Directional estimate — not actuarial.",
                         )
                     with m_col3:
@@ -1539,7 +1540,7 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                 with m_sub4:
                     st.metric("📑 Research Papers", len(cat_research), help="Peer-reviewed actuarial studies & loss cost models")
                 with m_sub5:
-                    st.metric("🏢 Competitor Intel", len(cat_competitors), help="Carrier riders, endorsements & policy terms")
+                    st.metric("🏢 Competitor Intel", len(cat_competitors), help="Insurer add-ons, endorsements & policy terms")
 
                 st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
 

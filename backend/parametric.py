@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from backend import analytics
+from backend.money import inr
 
 FULL_CREDIBILITY_EVENTS = 100
 RISK_MULTIPLE = 0.25
@@ -117,7 +118,7 @@ def build(key: str, config: Dict[str, Any], expense_pct: float, profit_pct: floa
              "from company claims. A physical trigger (hail size, wind speed, flood depth) needs its own hazard data.",
              "Synthetic demo data: the method is real, the figures are illustrative."]
     if not config.get("trigger_index"):
-        notes.insert(0, f"Trigger defaulted to the median observed event index (${median:,.2f} per exposure); set the "
+        notes.insert(0, f"Trigger defaulted to the median observed event index ({inr(median, True)} per exposure); set the "
                         "trigger the product will actually use.")
     if not ev["events"]:
         notes.insert(0, "No catastrophe events of this peril in the data: the rate rests entirely on the hazard "

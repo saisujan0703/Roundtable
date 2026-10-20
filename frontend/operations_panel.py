@@ -14,6 +14,8 @@ from typing import Any, Callable, Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
+from money import inr
+
 EDIT_COLUMNS = ("launch", "acknowledge_days", "decision_days", "payment_days", "status", "confirmed_by", "note")
 
 
@@ -23,17 +25,7 @@ def _md(text: Optional[str]) -> str:
 
 def _money(v: Optional[float]) -> str:
     """Rupees with Indian digit grouping: 1234567 -> "₹12,34,567"."""
-    if v is None:
-        return "n/a"
-    n = round(v)
-    digits, head = str(abs(n)), []
-    rest, tail = digits[:-3], digits[-3:]
-    while len(rest) > 2:
-        head.insert(0, rest[-2:])
-        rest = rest[:-2]
-    if rest:
-        head.insert(0, rest)
-    return ("-" if n < 0 else "") + "₹" + ",".join(head + [tail])
+    return inr(v)
 
 
 def _render_compliance(bid: int, data: Optional[Dict[str, Any]],

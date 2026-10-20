@@ -22,6 +22,8 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Dict, List, Optional
 
+from backend.money import inr
+
 MASTER_CIRCULAR = "IRDAI Master Circular on General Insurance Business, 2024"
 EOM_LIMIT_PCT = 30.0   # IRDAI (Expenses of Management, including Commission, of Insurers) Regulations, 2024
 STANDARDS = [
@@ -43,9 +45,7 @@ STANDARDS = [
 
 
 def _m(x: Optional[float], cents: bool = True) -> str:
-    if x is None:
-        return "—"
-    return f"${x:,.2f}" if cents else f"${x:,.0f}"
+    return inr(x, paise=cents, na="—")
 
 
 def _p(x: Optional[float], n: int = 1) -> str:
@@ -119,7 +119,7 @@ def build(title: str, indication: Dict[str, Any], development: Dict[str, Any], p
           f"{_p(indication.get('share_of_current_premium_pct'))} of it).",
           ""]
     if ap and ap.get("deviation_pct") is None:
-        md += [f"**Selected rate with a $0 indication** (no incremental cost in the data). Basis: {ap['note']}", ""]
+        md += [f"**Selected rate with a ₹0 indication** (no incremental cost in the data). Basis: {ap['note']}", ""]
     elif ap and abs(ap["deviation_pct"]) > 0.05:
         md += [f"**Selected vs indicated:** {ap['deviation_pct']:+.1f}%. Reason: {ap['note'] or '—'}", ""]
 

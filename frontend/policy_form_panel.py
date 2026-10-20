@@ -12,13 +12,15 @@ from typing import Any, Callable, Dict, Optional
 import pandas as pd
 import streamlit as st
 
+from money import inr
+
 
 def _md(text: Optional[str]) -> str:
     return (str(text) if text is not None else "").replace("$", "\\$")
 
 
 def _money(v: Optional[float]) -> str:
-    return "n/a" if v is None else f"${v:,.0f}"
+    return inr(v)
 
 
 def render_policy_form(brief: Dict[str, Any], data: Optional[Dict[str, Any]],

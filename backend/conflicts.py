@@ -32,6 +32,8 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from backend.money import inr
+
 HIGH, MEDIUM, LOW = "high", "medium", "low"
 
 # Below this share of claims denied under exclusions, the claims data shows no coverage gap
@@ -230,7 +232,7 @@ def _claims_outlook(analytics: Dict[str, Any], rec: Dict[str, Any], proxy: bool)
     if new_cover:
         parts.append(f"Claims verdict {rec['verdict']}: {rec.get('finding', '')}")
     if scope_lr is not None:
-        parts.append(f"Loss + ALAE ratio in scope {scope_lr:.1f}% on ${lr.get('earned_premium') or 0:,.0f} earned premium"
+        parts.append(f"Loss + ALAE ratio in scope {scope_lr:.1f}% on {inr(lr.get('earned_premium') or 0)} earned premium"
                      + (" (healthy)." if healthy else "."))
     return {"label": "Claims data (proxy patterns)" if proxy else "Claims data", "text": " ".join(parts),
             "url": "sqlite://roundtable.db/claims?metric=loss_ratio"}

@@ -11,7 +11,7 @@ Cases
   combined         the highest- and lowest-rated combinations, so the multiplication order and rounding are tested
 
 Expected premium = round(base rate x product of factors, 2): factors at 4 decimals, as the plan shows them, and the
-premium rounded once to cents. A tester runs each case in PolicyCenter (quote with those characteristics) and records
+premium rounded once to paise. A tester runs each case in PolicyCenter (quote with those characteristics) and records
 the premium PolicyCenter produced; a case passes when it is within TOLERANCE of the expected premium.
 
 The cases are tied to the plan they were generated from (fingerprint): if the plan changes (new selected rate,
@@ -26,6 +26,8 @@ import json
 import math
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+from backend.money import inr
 
 TOLERANCE = 0.01
 STATUSES = ("Not run", "Pass", "Fail", "Blocked")
@@ -49,11 +51,11 @@ def _case(cid: str, kind: str, title: str, plan: Dict[str, Any], levels: Dict[st
         steps.append({"step": f"{v['label']} = {L['level']}", "factor": L["selected"], "running": round(running, 4)})
     if deductible:
         running *= deductible["factor"]
-        steps.append({"step": f"Deductible ${deductible['deductible']:,.0f}", "factor": deductible["factor"],
+        steps.append({"step": f"Deductible {inr(deductible['deductible'])}", "factor": deductible["factor"],
                       "running": round(running, 4)})
     if limit:
         running *= limit["ilf"]
-        steps.append({"step": f"Limit ${limit['limit']:,.0f}", "factor": limit["ilf"], "running": round(running, 4)})
+        steps.append({"step": f"Limit {inr(limit['limit'])}", "factor": limit["ilf"], "running": round(running, 4)})
     return {"id": cid, "kind": kind, "title": title, "inputs": {
                 **{v["label"]: levels[v["name"]] for v in plan["variables"]},
                 "Deductible": deductible["deductible"] if deductible else (plan.get("deductibles") or {}).get("base_deductible"),
@@ -81,12 +83,12 @@ def generate(plan: Dict[str, Any]) -> Dict[str, Any]:
         if r["base"]:
             continue
         n += 1
-        cases.append(_case(f"RT-{n:03d}", "deductible", f"Deductible ${r['deductible']:,.0f}", plan, base, r, None))
+        cases.append(_case(f"RT-{n:03d}", "deductible", f"Deductible {inr(r['deductible'])}", plan, base, r, None))
     for r in (plan.get("ilfs") or {}).get("rows") or []:
         if r["basic"] or r["thin"]:
             continue
         n += 1
-        cases.append(_case(f"RT-{n:03d}", "limit", f"Limit ${r['limit']:,.0f}", plan, base, base_ded, r))
+        cases.append(_case(f"RT-{n:03d}", "limit", f"Limit {inr(r['limit'])}", plan, base, base_ded, r))
     hi = {v["name"]: max(v["levels"], key=lambda L: L["selected"])["level"] for v in plan["variables"]}
     lo = {v["name"]: min(v["levels"], key=lambda L: L["selected"])["level"] for v in plan["variables"]}
     rows = ded.get("rows") or []

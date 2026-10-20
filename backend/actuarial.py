@@ -22,6 +22,7 @@ from datetime import date, datetime
 from typing import Any, Dict, Optional
 
 from backend import pricing
+from backend.money import inr
 
 MAX_BENCHMARKS = 12
 SELECTION_TOLERANCE_PCT = 5.0   # a selected rate further than this from the indication needs a written reason
@@ -152,10 +153,10 @@ def status(state: Dict[str, Any], indication: Optional[Dict[str, Any]]) -> Dict[
     stale = ap.get("fingerprint") != fingerprint(indication)
     return {"approved": not stale, "stale": stale, "approval": ap,
             "detail": (f"Inputs changed since {ap['name']} approved it (indication now "
-                       f"${indication['indicated_premium']:,.2f}, approved ${ap['indicated_premium']:,.2f}); re-approve."
+                       f"{inr(indication['indicated_premium'], True)}, approved {inr(ap['indicated_premium'], True)}); re-approve."
                        if stale else
-                       f"Approved by {ap['name']}: selected ${ap['selected_premium']:,.2f} "
-                       f"(indicated ${ap['indicated_premium']:,.2f}).")}
+                       f"Approved by {ap['name']}: selected {inr(ap['selected_premium'], True)} "
+                       f"(indicated {inr(ap['indicated_premium'], True)}).")}
 
 
 def selected_rate(state: Dict[str, Any], indication: Dict[str, Any]) -> float:

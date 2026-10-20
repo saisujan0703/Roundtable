@@ -146,8 +146,8 @@ def build(indication: Dict[str, Any], key: str, covered: Optional[Dict[str, Any]
         scale = n_ult / n_reported
         ci = [round(1000 * lo * scale / expo / exp_freq, 3), round(1000 * hi * scale / expo / exp_freq, 3)]
     kpis = [kpi("Claim frequency", act_freq, exp_freq, "per 1,000 exposures", ci),
-            kpi("Severity", act_sev, exp_lc * 1000 / exp_freq if exp_freq else None, "$ per claim"),
-            kpi("Pure loss cost", act_lc, exp_lc, "$ per exposure")]
+            kpi("Severity", act_sev, exp_lc * 1000 / exp_freq if exp_freq else None, "₹ per claim"),
+            kpi("Pure loss cost", act_lc, exp_lc, "₹ per exposure")]
     exp_lr = indication["loss_and_lae_per_exposure"] / selected_rate if selected_rate else None
     act_lr = (act_lc * indication["loss_and_lae_per_exposure"] / indication["pure_loss_cost"] / selected_rate
               if selected_rate and indication["pure_loss_cost"] else None)

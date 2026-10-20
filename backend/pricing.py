@@ -38,6 +38,8 @@ import calendar
 from datetime import date
 from typing import Any, Dict, List, Optional
 
+from backend.money import inr
+
 FULL_CREDIBILITY_CLAIMS = 1082  # classical standard: 90% probability of being within 5% of the expected count
 DEV_METHODS = ("chain_ladder", "bornhuetter_ferguson", "heuristic")
 CAT_DRIVEN_SHARE_PCT = 50.0     # above this CAT share the pattern is priced with its CAT losses in (see notes)
@@ -350,7 +352,7 @@ def rate_indication(analytics: Dict[str, Any], overrides: Optional[Dict[str, Any
                  "risks than the whole book. Judgement — revisit once take-up data exists.")
     if ctx["remove_cat_large"]:
         exc = composition.get("excess") or {}
-        notes.append(f"Non-CAT losses capped at ${a['large_loss_cap']:,.0f} per claim; excess factor "
+        notes.append(f"Non-CAT losses capped at {inr(a['large_loss_cap'])} per claim; excess factor "
                      f"{ctx['excess_factor']:.3f} from the {exc.get('source', 'pattern')}'s long-run losses above the cap. "
                      f"CAT losses removed and replaced by a {a['cat_load_pct']:.1f}% provision "
                      + ("(the pattern's long-run CAT-to-non-CAT ratio over "

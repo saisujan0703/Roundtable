@@ -5,10 +5,10 @@ Deterministic checks run on every piece of LLM-written text before it is saved, 
 the model was given. No model is involved in checking.
 
 Checks
-- numbers    every %, $, ratio and count in the text must match a computed value (within display rounding)
+- numbers    every %, ₹ amount, ratio and count in the text must match a computed value (within display rounding)
 - citations  cited URLs must be sources that were actually retrieved; [n] references must exist
 - trend      wording ("significant", "rising", "falling") must agree with the fitted frequency trend
-- names      carriers and regulators named in the text must appear in the sources given to the model
+- names      insurers and regulators named in the text must appear in the sources given to the model
 - letters    no day counts, phone numbers or e-mail addresses (state rules come only via merge fields), and
              policy clause ids must exist in the uploaded form
 
@@ -31,12 +31,15 @@ ERROR, WARNING = "error", "warning"
 _CONVENTIONS = {100.0, 1000.0, 95.0, 12.0, 24.0, 90.0}
 _SMALL_PLAIN = 10  # plain integers up to this (counts like "three causes", list sizes) aren't checked
 
+# Amounts are rupees with Indian grouping (₹12,34,567, Rs 1,23,456, INR 5 lakh, ₹1.2 crore); $ £ € and western
+# grouping (1,234,567) are still read, for sources and older briefs.
 _NUM_RE = re.compile(
-    r"(?<![\w.\-/])(?P<sign>[-+−])?(?P<cur>[$£€])?\s?"
-    r"(?P<int>\d{1,3}(?:,\d{3})+|\d+)(?P<dec>\.\d+)?"
-    r"(?:\s?(?P<unit>%|x\b|×|bn\b|million\b|billion\b|thousand\b|[kKmMB]\b))?"
+    r"(?<![\w.\-/])(?P<sign>[-+−])?(?P<cur>[$£€₹]|Rs\.?|INR)?\s?"
+    r"(?P<int>\d{1,2}(?:,\d{2})+,\d{3}|\d{1,3}(?:,\d{3})+|\d+)(?P<dec>\.\d+)?"
+    r"(?:\s?(?P<unit>%|x\b|×|bn\b|million\b|billion\b|thousand\b|lakhs?\b|lacs?\b|crores?\b|cr\b|[kKmMB]\b))?"
 )
-_MULT = {"k": 1e3, "K": 1e3, "thousand": 1e3, "m": 1e6, "M": 1e6, "million": 1e6, "B": 1e9, "bn": 1e9, "billion": 1e9}
+_MULT = {"k": 1e3, "K": 1e3, "thousand": 1e3, "m": 1e6, "M": 1e6, "million": 1e6, "B": 1e9, "bn": 1e9, "billion": 1e9,
+         "lakh": 1e5, "lakhs": 1e5, "lac": 1e5, "lacs": 1e5, "crore": 1e7, "crores": 1e7, "cr": 1e7}
 
 
 # ---------------------------------------------------------------------------

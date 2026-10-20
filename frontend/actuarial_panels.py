@@ -13,13 +13,13 @@ from typing import Any, Callable, Dict, Optional
 import pandas as pd
 import streamlit as st
 
+from money import TABLE_FORMAT, TABLE_FORMAT_PAISE, inr
+
 Call = Callable[..., Optional[Dict[str, Any]]]
 
 
 def _money(x: Optional[float], cents: bool = False) -> str:
-    if x is None:
-        return "—"
-    return f"${x:,.2f}" if cents else f"${x:,.0f}"
+    return inr(x, paise=cents, na="—")
 
 
 def _notes(notes) -> None:
@@ -67,7 +67,7 @@ def render_loss_development(brief: Dict[str, Any], call: Call) -> None:
             st.markdown("**Triangle** (cumulative, at each year end)")
             df = _triangle_df(section, money)
             st.dataframe(df, hide_index=True, use_container_width=True,
-                         column_config={c: st.column_config.NumberColumn(format="$%d" if money else "%d")
+                         column_config={c: st.column_config.NumberColumn(format=TABLE_FORMAT if money else "%d")
                                         for c in df.columns if c != "Accident year"})
             st.markdown("**Age-to-age factors** (volume-weighted)")
             st.dataframe(pd.DataFrame([{"Ages": f"{f['from_age']}–{f['to_age']} m", "Selected": f["factor"],
@@ -80,7 +80,7 @@ def render_loss_development(brief: Dict[str, Any], call: Call) -> None:
                 "CDF to ultimate": r["cdf"], "Chain-ladder ultimate": r["chain_ladder_ultimate"],
                 "BF ultimate": r["bf_ultimate"], "Note": "extrapolated (< 12 m)" if r["extrapolated"] else ""}
                 for r in section["rows"]]), hide_index=True, use_container_width=True,
-                column_config={k: st.column_config.NumberColumn(format="$%.0f" if money else "%.1f")
+                column_config={k: st.column_config.NumberColumn(format=TABLE_FORMAT if money else "%.1f")
                                for k in ("Reported", "Chain-ladder ultimate", "BF ultimate")})
     st.caption("Change the tail factor and the method in Rate indication → Assumptions.")
     _notes(d.get("notes"))
@@ -147,7 +147,7 @@ def render_rating_plan(brief: Dict[str, Any], call: Call) -> None:
     st.dataframe(pd.DataFrame([{"Territory": s["territory"], "Relativity": s["relativity"],
                                 "Rate": s["rate_at_base_levels"]} for s in p["state_rates"]]),
                  hide_index=True, use_container_width=True,
-                 column_config={"Rate": st.column_config.NumberColumn(format="$%.2f")})
+                 column_config={"Rate": st.column_config.NumberColumn(format=TABLE_FORMAT_PAISE)})
     _notes(p.get("notes"))
 
 
@@ -158,8 +158,8 @@ PLAN_FIELDS = [  # key, label, min, max, step
     ("take_up_pct", "Take-up % of eligible book", 0.1, 100.0, 1.0),
     ("growth_pct", "Growth %/yr", -50.0, 200.0, 1.0),
     ("years", "Plan years", 1, 5, 1),
-    ("launch_cost", "One-off launch cost ($)", 0.0, 1e8, 10_000.0),
-    ("fixed_expense_per_year", "Fixed expenses per year ($)", 0.0, 1e8, 5_000.0),
+    ("launch_cost", "One-off launch cost (₹)", 0.0, 1e8, 10_000.0),
+    ("fixed_expense_per_year", "Fixed expenses per year (₹)", 0.0, 1e8, 5_000.0),
     ("quota_share_pct", "Quota share ceded %", 0.0, 90.0, 5.0),
     ("ceding_commission_pct", "Ceding commission %", 0.0, 60.0, 1.0),
     ("premium_to_surplus", "Premium-to-capital ratio", 0.5, 6.0, 0.1),
@@ -196,7 +196,7 @@ def render_business_plan(brief: Dict[str, Any], call: Call) -> None:
               "launch and fixed costs.")
     vs = b.get("rate_vs_indication_pct")
     st.caption(f"Rate {_money(b['rate'], True)} per exposure"
-               + (f" ({vs:+.1f}% vs the indication)" if vs is not None else " (the indication is $0)") + " · "
+               + (f" ({vs:+.1f}% vs the indication)" if vs is not None else " (the indication is ₹0)") + " · "
                f"eligible book {b['eligible_exposure']:,.0f} {b['exposure_unit']} · loss & LAE "
                f"{_money(b['loss_and_lae_per_exposure'], True)} per exposure.")
 
@@ -210,7 +210,7 @@ def render_business_plan(brief: Dict[str, Any], call: Call) -> None:
                     vals[k] = cols[i % 3].number_input(label, int(lo), int(hi), int(cur), int(step))
                 else:
                     vals[k] = cols[i % 3].number_input(label, float(lo), float(hi), float(cur), float(step))
-            rate = st.number_input("Rate per exposure ($) — 0 = the selected rate", 0.0, 1e7,
+            rate = st.number_input("Rate per exposure (₹) — 0 = the selected rate", 0.0, 1e7,
                                    float(p["rate"] or 0.0), 1.0)
             if rate > 0:
                 vals["rate"] = rate
@@ -237,7 +237,7 @@ def render_business_plan(brief: Dict[str, Any], call: Call) -> None:
         "After tax": y["after_tax_result"], "Capital": y["capital"], "Combined ratio %": y["combined_ratio_pct"],
         "Return on capital %": y["return_on_capital_pct"]} for y in b["projection"]]),
         hide_index=True, use_container_width=True,
-        column_config={k: st.column_config.NumberColumn(format="$%.0f") for k in
+        column_config={k: st.column_config.NumberColumn(format=TABLE_FORMAT) for k in
                        ("Written premium", "Loss & LAE", "Expenses", "Ceded premium", "Underwriting result",
                         "Investment income", "After tax", "Capital")})
     st.markdown("#### Stress scenarios")
@@ -245,7 +245,7 @@ def render_business_plan(brief: Dict[str, Any], call: Call) -> None:
                                 "Combined ratio %": s["combined_ratio_pct"], "After-tax result": s["after_tax_result"],
                                 "Return on capital %": s["return_on_peak_capital_pct"]} for s in b["scenarios"]]),
                  hide_index=True, use_container_width=True,
-                 column_config={k: st.column_config.NumberColumn(format="$%.0f")
+                 column_config={k: st.column_config.NumberColumn(format=TABLE_FORMAT)
                                 for k in ("Written premium", "After-tax result")})
     _notes(b.get("notes"))
 
@@ -273,4 +273,4 @@ def render_actuarial_memo(brief: Dict[str, Any], call: Call) -> None:
     st.download_button("Download memorandum (.md)", m["markdown"], file_name=m["filename"], mime="text/markdown",
                        type="primary")
     with st.container(border=True):
-        st.markdown(m["markdown"].replace("$", "\\$"))
+        st.markdown(m["markdown"])

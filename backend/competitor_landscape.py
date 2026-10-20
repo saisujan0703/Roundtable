@@ -440,7 +440,7 @@ def build(title: str, context: str = "", search: Optional[SearchFn] = None,
     except Exception as e:      # no provider, quota, bad reply
         llm_used = False
         carriers = _named_carriers(sources, r["names"])
-        notes.append(f"No AI extraction ({type(e).__name__}): carriers named on the pages are listed with their "
+        notes.append(f"No AI extraction ({type(e).__name__}): insurers named on the pages are listed with their "
                      "sources only. Configure an LLM to extract coverage, prices and ratings.")
 
     if carriers and llm_used:
@@ -464,7 +464,7 @@ def build(title: str, context: str = "", search: Optional[SearchFn] = None,
     if not sources:
         notes.append("The searches returned no usable pages; try a more specific product title.")
     elif not carriers:
-        notes.append("No carrier offering this kind of cover was confirmed on the pages found.")
+        notes.append("No insurer offering this kind of cover was confirmed on the pages found.")
     if carriers and not any(c["price"] for c in carriers):
         notes.append(f"No published price was found: {r['price_note']}.")
     result = {

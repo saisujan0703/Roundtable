@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from backend import llm_client, policy_form, verification
 from backend.llm import DENIAL_REASON_NAMES, LOSS_CAUSE_NAMES
+from backend.money import inr
 
 SECTIONS: List[tuple] = [
     ("coverage_summary", "1. Coverage summary"),
@@ -50,7 +51,7 @@ STRICT RULES:
 
 
 def _money(v: Optional[float]) -> Optional[str]:
-    return None if v is None else f"${v:,.0f}"
+    return None if v is None else inr(v)
 
 
 def build_facts(brief: Dict[str, Any]) -> Dict[str, Any]:

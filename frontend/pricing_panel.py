@@ -15,14 +15,14 @@ from typing import Any, Callable, Dict, Optional
 import pandas as pd
 import streamlit as st
 
+from money import TABLE_FORMAT, TABLE_FORMAT_PAISE, inr
+
 DEV_METHODS = {"chain_ladder": "Chain-ladder", "bornhuetter_ferguson": "Bornhuetter-Ferguson",
                "heuristic": "Heuristic (FNOL reserve ratio)"}
 
 
 def _money(x: Optional[float], cents: bool = False) -> str:
-    if x is None:
-        return "—"
-    return f"${x:,.2f}" if cents else f"${x:,.0f}"
+    return inr(x, paise=cents, na="—")
 
 
 def _md(text: str) -> str:
@@ -119,9 +119,9 @@ def render_pricing(brief: Dict[str, Any], call: Callable[..., Optional[Dict[str,
         "Credible": "yes" if r["credible"] else "low",
     } for r in rows])
     st.dataframe(df, hide_index=True, use_container_width=True, column_config={
-        "Avg severity": st.column_config.NumberColumn(format="$%.0f"),
-        "Loss cost": st.column_config.NumberColumn(format="$%.2f"),
-        "Trended loss cost": st.column_config.NumberColumn(format="$%.2f"),
+        "Avg severity": st.column_config.NumberColumn(format=TABLE_FORMAT),
+        "Loss cost": st.column_config.NumberColumn(format=TABLE_FORMAT_PAISE),
+        "Trended loss cost": st.column_config.NumberColumn(format=TABLE_FORMAT_PAISE),
         f"Exposure ({unit})": st.column_config.NumberColumn(format="%.0f"),
     })
 
@@ -168,7 +168,7 @@ def _render_assumptions(bid: int, data: Dict[str, Any], a: Dict[str, Any], overr
             vals["apply_development"] = d3.checkbox("Apply development", value=bool(a["apply_development"]))
             st.markdown("**Catastrophes and large losses**")
             l1, l2 = st.columns(2)
-            vals["large_loss_cap"] = l1.number_input("Large-loss cap per claim ($)", 10_000.0, 5_000_000.0,
+            vals["large_loss_cap"] = l1.number_input("Large-loss cap per claim (₹)", 10_000.0, 5_000_000.0,
                                                      float(a["large_loss_cap"]), 10_000.0, format="%.0f")
             vals["cat_load_pct"] = l2.number_input(f"CAT provision % (data: {a['data_cat_load_pct']:.1f}%)", 0.0, 200.0,
                                                    float(a["cat_load_pct"]), 0.5,
@@ -241,7 +241,7 @@ def _render_benchmarks(bid: int, data: Dict[str, Any], unit1: str, call: Callabl
             types = data.get("benchmark_types") or {"loss_cost": "Loss cost", "premium": "Premium"}
             c1, c2, c3 = st.columns(3)
             kind = c1.selectbox("Type", list(types), format_func=types.get)
-            value = c2.number_input(f"Value per {unit1} ($)", 0.0, 1e7, 0.0, 1.0)
+            value = c2.number_input(f"Value per {unit1} (₹)", 0.0, 1e7, 0.0, 1.0)
             as_of = c3.date_input("Applies as of", value=date.today())
             source = st.text_input("Source", placeholder="e.g. IIB motor OD statistics, private car, MH, FY2024-25")
             c4, c5, c6 = st.columns(3)
@@ -299,7 +299,7 @@ def _render_approval(bid: int, data: Dict[str, Any], call: Callable[..., Optiona
     with st.form(key=f"approve_form_{bid}"):
         c1, c2 = st.columns(2)
         name = c1.text_input("Approving actuary", value=(ap or {}).get("name") or st.session_state.get("user_name", ""))
-        selected = c2.number_input("Selected rate ($)", 0.0, 1e7, float(data["indicated_premium"] or 0.0), 1.0,
+        selected = c2.number_input("Selected rate (₹)", 0.0, 1e7, float(data["indicated_premium"] or 0.0), 1.0,
                                    help="Defaults to the indication; more than 5% away needs a reason.")
         note = st.text_area("Reason / note", placeholder="Required when the selected rate differs from the indication "
                                                          "by more than 5%.")

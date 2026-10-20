@@ -30,6 +30,7 @@ import pandas as pd
 
 from backend import risk_patterns
 from backend.database import DB_PATH, get_connection
+from backend.money import inr
 
 LARGE_LOSS_THRESHOLD = 1_000_000   # Rs 10 lakh
 MIN_CREDIBLE_CLAIMS = 30          # per AY / per state before a rate is called credible
@@ -319,7 +320,7 @@ def get_loss_ratio_by_tag(tag_value: str) -> dict:
         "loss_ratio_points": _r(100 * tag_inc / prem, 2),
         "scope_loss_ratio_pct": _r(100 * scope_inc / prem, 1),
         "by_year": by_year,
-        "status": (f"This pattern consumed {100 * tag_inc / prem:.1f} points of loss ratio on ${prem:,.0f} earned premium "
+        "status": (f"This pattern consumed {100 * tag_inc / prem:.1f} points of loss ratio on {inr(prem)} earned premium "
                    f"({scope['description']}); the scope's overall loss + ALAE ratio is {100 * scope_inc / prem:.1f}%."),
     }
 
@@ -525,9 +526,9 @@ def get_litigation_subrogation_summary(tag_value: str) -> dict:
     if not h.get("has_data"):
         return {"has_data": False, "status": "Insufficient evidence for litigation/subrogation signal."}
     h["status"] = (f"Litigation rate {h['litigation_rate_pct']}% (baseline {h['baseline_litigation_rate_pct']}%); "
-                   f"subrogation recovered ${h['subrogation_recovered']:,.0f} "
+                   f"subrogation recovered {inr(h['subrogation_recovered'])} "
                    f"({h['subrogation_recovery_rate_pct']}% of paid on other-party-at-fault claims); "
-                   f"salvage ${h['salvage_recovered']:,.0f}.")
+                   f"salvage {inr(h['salvage_recovered'])}.")
     return h
 
 

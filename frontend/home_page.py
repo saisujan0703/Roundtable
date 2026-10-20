@@ -14,6 +14,8 @@ from typing import Any, Callable, Dict, List
 
 import streamlit as st
 
+from money import inr_short
+
 DB_PATH = Path(__file__).resolve().parent.parent / "roundtable.db"
 
 ICON_STROKE = "#3D3FE0"
@@ -68,10 +70,8 @@ def portfolio_stats() -> Dict[str, Any]:
 
 
 def money_short(x: float) -> str:
-    for div, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
-        if abs(x) >= div:
-            return f"${x / div:,.1f}{suffix}"
-    return f"${x:,.0f}"
+    """Headline rupees: ₹12.35 lakh, ₹9.88 crore."""
+    return inr_short(x)
 
 
 # ---------------------------------------------------------------------------
@@ -294,11 +294,11 @@ FEATURES = [
      [("Loss trends", "i"), ("Directional range", "")], [("Earned exposure", ""), ("Severity", "")]),
     (ICON_SHIELD, "Underwriting Review", "Risk eligibility, guideline boundaries and customer segment exposure thresholds.",
      [("Segment exposure", ""), ("Eligible", "g")], [("Underwriting rules", "i")]),
-    (ICON_BRIEFCASE, "Competitor Intel", "Peer carrier coverages, endorsements and marketed product terms, with IRDAI UINs and policy wordings a click away.",
-     [("Carrier products", "i"), ("Benchmarked", "g")], [("Policy terms", "")]),
+    (ICON_BRIEFCASE, "Competitor Intel", "Peer insurer covers, add-ons and marketed product terms, with IRDAI UINs and policy wordings a click away.",
+     [("Insurer products", "i"), ("Benchmarked", "g")], [("Policy terms", "")]),
     (ICON_SCALE, "Regulatory Compliance", "IRDAI regulations, master circulars, Use & File product rules and statutory guidance.",
      [("IRDAI circulars", "i"), ("Use & File", "")], [("IRDAI compliance", "g")]),
-    (ICON_GLOBE, "Live Web Research", "Cited news, regulator data, actuarial research and carrier pages from trusted sources.",
+    (ICON_GLOBE, "Live Web Research", "Cited news, regulator data, actuarial research and insurer pages from trusted sources.",
      [("Live search", "i"), ("Cited", "g")], [("Trusted domains", "")]),
 ]
 

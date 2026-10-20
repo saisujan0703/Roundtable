@@ -13,6 +13,8 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from money import TABLE_FORMAT, inr_short
+
 # Validated reference palette (dataviz references/palette.md, light mode)
 SERIES = "#3D3FE0"      # slot 1: this risk pattern (Roundtable indigo)
 COMPARE = "#eb6834"     # slot 2: second series where two measures share a chart
@@ -48,19 +50,25 @@ CAUSE_NAMES = {
 # Formatting helpers
 # ---------------------------------------------------------------------------
 def _money(v: Optional[float]) -> str:
-    """Compact money for Streamlit text; the $ is escaped so markdown does not start LaTeX math."""
-    if v is None:
-        return "n/a"
-    if abs(v) >= 1_000_000:
-        return f"\\${v / 1_000_000:,.2f}M"
-    if abs(v) >= 10_000:
-        return f"\\${v / 1_000:,.0f}K"
-    return f"\\${v:,.0f}"
+    """Compact rupees for Streamlit text: ₹12.35 lakh, ₹9.88 crore."""
+    return inr_short(v)
 
 
 def _md(text: Optional[str]) -> str:
     """Escape $ in backend-built sentences before handing them to Streamlit markdown."""
     return (text or "").replace("$", "\\$")
+
+
+# Charts use an Indian number locale: "$,.0f" renders as ₹12,34,567. Money axes are labelled in lakh / crore.
+INR_LOCALE = {"number": {"decimal": ".", "thousands": ",", "grouping": [3, 2], "currency": ["₹", ""]}}
+INR_AXIS = "inr"
+_INR_LABEL = ("abs(datum.value) >= 1e7 ? '₹' + format(datum.value / 1e7, '.3~g') + ' cr' : "
+              "abs(datum.value) >= 1e5 ? '₹' + format(datum.value / 1e5, '.3~g') + ' L' : "
+              "'₹' + format(datum.value, ',.0f')")
+
+
+def _axis(fmt: str, **kw: Any) -> alt.Axis:
+    return alt.Axis(labelExpr=_INR_LABEL, **kw) if fmt == INR_AXIS else alt.Axis(format=fmt, **kw)
 
 
 def _pct(v: Optional[float]) -> str:
@@ -76,7 +84,7 @@ def _delta_pts(v: Optional[float], base: Optional[float], unit: str = " pts") ->
 def _chart(c: alt.Chart, height: Any = 260) -> None:
     st.altair_chart(
         (c.properties(height=height) if height is not None else c)
-        .configure(background="transparent", font="Plus Jakarta Sans")   # must precede configure_* calls
+        .configure(background="transparent", font="Plus Jakarta Sans", locale=INR_LOCALE)  # precedes configure_*
         .configure_view(strokeWidth=0)
         .configure_axis(labelColor=TEXT, titleColor=TEXT, gridColor="#ECEDF3", domainColor="#d6d4ce",
                         labelFontSize=12, titleFontSize=12, titleFontWeight="normal")
@@ -99,7 +107,7 @@ def _hbar(df: pd.DataFrame, cat: str, val: str, title: str, fmt: str, tooltip: L
                  if color_field else alt.value(SERIES))
     base = alt.Chart(df).encode(
         y=alt.Y(f"{cat}:N", sort="-x" if sort_desc else None, title=None, axis=alt.Axis(labelLimit=220)),
-        x=alt.X(f"{val}:Q", title=None, axis=alt.Axis(format=fmt, tickCount=5)),
+        x=alt.X(f"{val}:Q", title=None, axis=_axis(fmt, tickCount=5)),
     )
     bars = base.mark_bar(cornerRadiusEnd=4, height={"band": 0.7}).encode(color=enc_color, tooltip=tooltip)
     layer = bars
@@ -172,13 +180,13 @@ def _severity(a: Dict[str, Any]) -> None:
         ])
         chart = alt.Chart(cmp).mark_bar(cornerRadiusEnd=4).encode(
             x=alt.X("Group:N", title=None, axis=None, sort=["This pattern", "Baseline"]),
-            y=alt.Y("Amount:Q", title=None, axis=alt.Axis(format="$.2~s")),
+            y=alt.Y("Amount:Q", title=None, axis=_axis(INR_AXIS)),
             color=alt.Color("Group:N", scale=alt.Scale(domain=["This pattern", "Baseline"], range=[SERIES, BASELINE]),
                             legend=alt.Legend(title=None)),
             column=alt.Column("Statistic:N", title=None, header=alt.Header(labelColor=TEXT, labelOrient="bottom")),
             tooltip=["Statistic", "Group", alt.Tooltip("Amount:Q", format="$,.0f")],
         ).properties(width=130, height=220, title="Severity vs baseline")
-        st.altair_chart(chart.configure(background="transparent", font="Plus Jakarta Sans").configure_view(strokeWidth=0).configure_legend(orient="top")
+        st.altair_chart(chart.configure(background="transparent", font="Plus Jakarta Sans", locale=INR_LOCALE).configure_view(strokeWidth=0).configure_legend(orient="top")
                         .configure_title(color="#121318", fontSize=14, anchor="start"), width="content")
     with right:
         if lr.get("has_data"):
@@ -212,8 +220,8 @@ def _history(a: Dict[str, Any]) -> None:
         "Exposure": st.column_config.NumberColumn(format="%,.0f"),
         "Freq /1,000": st.column_config.NumberColumn(format="%.1f"),
         "Ex-CAT freq": st.column_config.NumberColumn(format="%.1f"),
-        "Avg severity": st.column_config.NumberColumn(format="$%,.0f"),
-        "Loss cost / exp.": st.column_config.NumberColumn(format="$%,.0f"),
+        "Avg severity": st.column_config.NumberColumn(format=TABLE_FORMAT),
+        "Loss cost / exp.": st.column_config.NumberColumn(format=TABLE_FORMAT),
         "LR pts": st.column_config.NumberColumn(format="%.1f"),
         "Open %": st.column_config.NumberColumn(format="%.0f%%"),
     })
@@ -247,14 +255,14 @@ def _causes(a: Dict[str, Any]) -> None:
               [alt.Tooltip("Cause:N"), alt.Tooltip("cnt:Q", title="Claims"), alt.Tooltip("Share:Q", format=".1f", title="Share %"),
                alt.Tooltip("avg_incurred:Q", title="Avg incurred", format="$,.0f")])
     with right:
-        _hbar(df, "Cause", "avg_incurred", "Average incurred by cause", "$.2~s",
+        _hbar(df, "Cause", "avg_incurred", "Average incurred by cause", INR_AXIS,
               [alt.Tooltip("Cause:N"), alt.Tooltip("avg_incurred:Q", title="Avg incurred", format="$,.0f"),
                alt.Tooltip("incurred:Q", title="Total incurred", format="$,.0f")])
     desc = pd.DataFrame(a.get("loss_descriptions") or [])
     if not desc.empty:
         st.dataframe(desc.rename(columns={"description": "Most frequent loss descriptions", "cnt": "Claims", "avg_incurred": "Avg incurred"}),
                      hide_index=True, width="stretch",
-                     column_config={"Avg incurred": st.column_config.NumberColumn(format="$%,.0f")})
+                     column_config={"Avg incurred": st.column_config.NumberColumn(format=TABLE_FORMAT)})
 
 
 def _loss_types(a: Dict[str, Any]) -> None:
@@ -275,7 +283,7 @@ def _loss_types(a: Dict[str, Any]) -> None:
     order = df.sort_values("incurred", ascending=False)["Exposure / coverage"].tolist()
     chart = alt.Chart(long).mark_bar(cornerRadiusEnd=4, height={"band": 0.7}, stroke="white", strokeWidth=2).encode(
         y=alt.Y("Exposure / coverage:N", sort=order, title=None, axis=alt.Axis(labelLimit=260)),
-        x=alt.X("sum(Amount):Q", title=None, axis=alt.Axis(format="$.2~s")),
+        x=alt.X("sum(Amount):Q", title=None, axis=_axis(INR_AXIS)),
         color=alt.Color("Part:N", scale=alt.Scale(domain=["Paid", "Case reserve"], range=[SERIES, COMPARE]), legend=alt.Legend(title=None)),
         order=alt.Order("Part:N", sort="descending"),
         tooltip=[alt.Tooltip("Exposure / coverage:N"), alt.Tooltip("Part:N"), alt.Tooltip("Amount:Q", format="$,.0f"),
@@ -328,7 +336,7 @@ def _geography(a: Dict[str, Any]) -> None:
         if not cats.empty:
             st.dataframe(cats.rename(columns={"cat_code": "Catastrophe", "claims": "Claims", "incurred": "Incurred"}),
                          hide_index=True, width="stretch",
-                         column_config={"Incurred": st.column_config.NumberColumn(format="$%,.0f")})
+                         column_config={"Incurred": st.column_config.NumberColumn(format=TABLE_FORMAT)})
         else:
             st.caption("No catastrophe-coded claims for this pattern.")
         st.caption(f"{geo.get('low_credibility_states', 0)} states below the credibility threshold.")
@@ -444,7 +452,7 @@ def _proxy_banner(a: Dict[str, Any]) -> None:
     how = "auto-suggested from the title" if basis.get("auto_suggested") else "selected by the reviewer"
     st.warning(f"**Proxy data — not this product's own claims.** No ClaimCenter claims are tagged for this product, so every "
                f"section below pools the claims of the related risk pattern(s) **{' + '.join(basis.get('proxy_tags', []))}** "
-               f"({how}). Frequency and severity show how a comparable peril behaves; claim counts and dollar totals belong "
+               f"({how}). Frequency and severity show how a comparable peril behaves; claim counts and rupee totals belong "
                f"to the proxy patterns, not to the new product.")
 
 

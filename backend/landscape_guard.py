@@ -226,6 +226,6 @@ def apply(result: Dict[str, Any], llm: Optional[LLMFn] = None, ai_review: bool =
     result["guard"] = {"checked": len(carriers), "kept": len(kept), "removed": removed, "trimmed": trimmed,
                        "ai_review": ai_ran, "notes": notes}
     if carriers and not kept:
-        result.setdefault("notes", []).append("Every carrier found was removed by the checks; see what was removed "
+        result.setdefault("notes", []).append("Every insurer found was removed by the checks; see what was removed "
                                               "and why below.")
     return result

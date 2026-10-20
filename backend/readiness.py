@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from backend import compliance, operations
+from backend.money import inr
 
 STATUSES = ("Not started", "In progress", "Done", "N/A")
 
@@ -47,17 +48,7 @@ DENIAL_NAMES = {
 
 def _money(v: Optional[float]) -> str:
     """Rupees with Indian digit grouping: 1234567 -> "₹12,34,567"."""
-    if v is None:
-        return "n/a"
-    n = round(v)
-    digits, head = str(abs(n)), []
-    rest, tail = digits[:-3], digits[-3:]
-    while len(rest) > 2:
-        head.insert(0, rest[-2:])
-        rest = rest[:-2]
-    if rest:
-        head.insert(0, rest)
-    return ("-" if n < 0 else "") + "₹" + ",".join(head + [tail])
+    return inr(v)
 
 
 def _item(item_id: str, stage: str, title: str, guidance: str, required: bool = True) -> Dict[str, Any]:

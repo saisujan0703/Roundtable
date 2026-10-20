@@ -14,15 +14,15 @@ from typing import Any, Callable, Dict, Optional
 import pandas as pd
 import streamlit as st
 
+from money import TABLE_FORMAT, TABLE_FORMAT_PAISE, inr
+
 Call = Callable[..., Optional[Dict[str, Any]]]
 STATUS_ICON = {"green": "🟢", "amber": "🟠", "red": "🔴", "no data": "⚪"}
 CASE_ICON = {"Pass": "✅", "Fail": "❌", "Blocked": "⛔", "Not run": "⚪"}
 
 
 def _money(x: Optional[float], cents: bool = False) -> str:
-    if x is None:
-        return "—"
-    return f"${x:,.2f}" if cents else f"${x:,.0f}"
+    return inr(x, paise=cents, na="—")
 
 
 def _md(text: Optional[str]) -> str:
@@ -72,8 +72,8 @@ def render_rating_tests(brief: Dict[str, Any], call: Call) -> None:
         "": CASE_ICON.get(c["status"], ""), "Case": c["id"], "Kind": c["kind"], "Title": c["title"],
         **{k: v for k, v in c["inputs"].items()}, "Expected": c["expected_premium"], "PolicyCenter": c["actual_premium"],
         "Tester": c["tester"], "Note": c["note"]} for c in cases]), hide_index=True, use_container_width=True,
-        column_config={"Expected": st.column_config.NumberColumn(format="$%.2f"),
-                       "PolicyCenter": st.column_config.NumberColumn(format="$%.2f")})
+        column_config={"Expected": st.column_config.NumberColumn(format=TABLE_FORMAT_PAISE),
+                       "PolicyCenter": st.column_config.NumberColumn(format=TABLE_FORMAT_PAISE)})
 
     st.markdown("#### Record a result")
     ids = [c["id"] for c in cases]
@@ -85,7 +85,7 @@ def render_rating_tests(brief: Dict[str, Any], call: Call) -> None:
                                    for w in case["worksheet"]]), hide_index=True, use_container_width=True)
     with st.form(key=f"rt_form_{bid}_{pick}", clear_on_submit=False):
         c1, c2, c3 = st.columns(3)
-        actual = c1.number_input("Premium PolicyCenter produced ($)", 0.0, 1e8,
+        actual = c1.number_input("Premium PolicyCenter produced (₹)", 0.0, 1e8,
                                  float(case["actual_premium"] or 0.0), 0.01, format="%.2f")
         tester = c2.text_input("Tester", value=case["tester"] or st.session_state.get("user_name", ""))
         blocked = c3.checkbox("Blocked (could not run)", value=case["status"] == "Blocked")
@@ -165,9 +165,9 @@ def render_parametric(brief: Dict[str, Any], call: Call) -> None:
     with st.expander("⚙️ Trigger, payout and hazard data", expanded=not p["saved_config"]):
         with st.form(key=f"param_form_{bid}", border=False):
             f1, f2, f3 = st.columns(3)
-            trig = f1.number_input("Trigger: event loss per exposure in the state ($)", 0.001, 1e6,
+            trig = f1.number_input("Trigger: event loss per exposure in the state (₹)", 0.001, 1e6,
                                    float(cfg["trigger_index"]), 1.0, format="%.2f")
-            payout = f2.number_input("Payout per policy ($)", 1.0, 1e7, float(cfg["payout"]), 100.0)
+            payout = f2.number_input("Payout per policy (₹)", 1.0, 1e7, float(cfg["payout"]), 100.0)
             material = f3.number_input("Material-loss index ($ per exposure)", 0.0, 1e6,
                                        float(cfg["material_loss_index"]), 1.0, format="%.2f",
                                        help="Index at which policyholders have a loss that matters — for basis risk.")
@@ -203,15 +203,15 @@ def render_parametric(brief: Dict[str, Any], call: Call) -> None:
         "Hazard probability": s["hazard_probability"], "Hazard source": s["hazard_source"],
         "Selected probability": s["selected_probability"], "Expected payout": s["expected_payout"], "Rate": s["rate"]}
         for s in sorted(p["states"], key=lambda s: -s["selected_probability"])]), hide_index=True,
-        use_container_width=True, column_config={"Expected payout": st.column_config.NumberColumn(format="$%.2f"),
-                                                 "Rate": st.column_config.NumberColumn(format="$%.2f")})
+        use_container_width=True, column_config={"Expected payout": st.column_config.NumberColumn(format=TABLE_FORMAT_PAISE),
+                                                 "Rate": st.column_config.NumberColumn(format=TABLE_FORMAT_PAISE)})
     st.markdown("#### Catastrophe events in the data")
     if p["events"]:
         st.dataframe(pd.DataFrame([{"Event": e["event"], "State": e["state"], "Date": e["date"], "Claims": e["claims"],
                                     "Incurred": e["incurred"], "Index ($/exposure)": e["index_per_exposure"],
                                     "Triggers": "yes" if e["triggers"] else "", "Basis": e["basis"]}
                                    for e in p["events"]]), hide_index=True, use_container_width=True,
-                     column_config={"Incurred": st.column_config.NumberColumn(format="$%.0f")})
+                     column_config={"Incurred": st.column_config.NumberColumn(format=TABLE_FORMAT)})
     else:
         st.info("No catastrophe events of this peril in the data.")
     st.caption(f"{p['events_observed']} event(s) in {p['years_observed']:.1f} years; burn credibility Z = "
