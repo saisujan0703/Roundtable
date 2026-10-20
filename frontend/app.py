@@ -35,6 +35,7 @@ from actuarial_panels import (render_actuarial_memo, render_business_plan, rende
 from actuarial_ops_panels import render_company_settings, render_monitoring, render_parametric, render_rating_tests
 from audit_panel import render_audit_log
 from library_panel import render_library
+from landscape_panel import render_landscape
 from radar_panel import render_radar
 from verification_badge import chip_html, render_verification
 from home_page import money_short, portfolio_stats, render_home, sculpture_svg
@@ -1302,6 +1303,8 @@ elif st.session_state.current_view in ("claims", "actuarial"):
             # ---------------------------------------------------------------
             if section == "Competitor intelligence":
                 st.markdown("### Competitor Intelligence")
+                render_landscape(brief, lambda method, path, **kw: _api_call(method, path, **kw))
+                st.markdown("#### From the source library")
                 st.caption("Qualitative market filings retrieved via RAG from verified competitor sources.")
 
                 comp_ev = brief_data.get("competitor_comparison", [])

@@ -159,7 +159,7 @@ def required_role(method: str, path: str) -> Optional[str]:
     if not m:
         return None  # creating briefs, idea assistant, voice input: any signed-in role
     rest = m.group("rest")
-    if rest == "proxies" or rest == "workflow/decision":
+    if rest in ("proxies", "workflow/decision", "competitor-landscape"):
         return None
     if rest.startswith("workflow/review/"):
         return LEAD_ACTUARY if rest.endswith("/actuarial") else CLAIMS_LEAD

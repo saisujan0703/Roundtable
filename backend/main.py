@@ -47,6 +47,7 @@ from backend import parametric
 from backend import rating_tests
 from backend import analytics as claims_analytics
 from backend import business_plan
+from backend import competitor_landscape
 from backend import rating_plan
 from backend import reserving
 
@@ -95,7 +96,7 @@ def init_db() -> None:
                          ("scenarios_json", "TEXT"), ("letters_json", "TEXT"), ("compliance_json", "TEXT"),
                          ("launch_json", "TEXT"), ("policy_form_json", "TEXT"),
                          ("workflow_json", "TEXT"), ("coverage_overrides_json", "TEXT"),
-                         ("actuarial_json", "TEXT")):
+                         ("actuarial_json", "TEXT"), ("landscape_json", "TEXT")):
             if col not in existing:
                 conn.execute(f"ALTER TABLE briefs ADD COLUMN {col} {ddl}")
         # Briefs created before tracking existed: their current text becomes the baseline
@@ -1886,6 +1887,42 @@ async def import_benchmarks(brief_id: int, request: Request, file: UploadFile = 
             raise HTTPException(status_code=400, detail=str(e))
         _save_actuarial(conn, brief_id, state)
     return {"brief_id": brief_id, **result, "benchmarks": state["benchmarks"]}
+
+
+# ---------------------------------------------------------------------------
+# Competitor landscape (backend.competitor_landscape)
+# ---------------------------------------------------------------------------
+@app.get("/api/briefs/{brief_id}/competitor-landscape")
+def get_competitor_landscape(brief_id: int):
+    """The last competitor scan for this brief (carriers, coverage, prices, ratings), or none yet."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT landscape_json FROM briefs WHERE id = ?", (brief_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Brief #{brief_id} not found")
+    return {"brief_id": brief_id, "landscape": json.loads(row["landscape_json"]) if row["landscape_json"] else None,
+            "search_configured": competitor_landscape.tavily_key() is not None,
+            "regions": {k: v["label"] for k, v in competitor_landscape.REGIONS.items()}}
+
+
+class LandscapeRequest(BaseModel):
+    region: Literal["US", "IN", "UK", "GLOBAL"] = "US"
+
+
+@app.post("/api/briefs/{brief_id}/competitor-landscape")
+def refresh_competitor_landscape(brief_id: int, req: Optional[LandscapeRequest] = None):
+    """Search the web for carriers offering this kind of cover and store the verified result (about a minute)."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT title, brief_json FROM briefs WHERE id = ?", (brief_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Brief #{brief_id} not found")
+    context = (json.loads(row["brief_json"] or "{}").get("idea_context") or "")[:1200]
+    result = competitor_landscape.build(row["title"], context, region=(req.region if req else "US"))
+    if not result.get("configured"):
+        raise HTTPException(status_code=400, detail=result["message"])
+    with get_connection() as conn:
+        conn.execute("UPDATE briefs SET landscape_json = ? WHERE id = ?", (json.dumps(result), brief_id))
+        conn.commit()
+    return {"brief_id": brief_id, "landscape": result, "search_configured": True}
 
 
 @app.get("/api/briefs/{brief_id}/filing-leads")

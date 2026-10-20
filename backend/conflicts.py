@@ -69,6 +69,11 @@ _LOSSES = re.compile(
     r"|combined ratios? (?:of |above |over |exceeding )?1\d\d|adverse (?:loss )?(?:experience|development)"
     r"|reserve (?:strengthening|charges?))",
     re.IGNORECASE)
+_CUSTOMER_SUBJECT = re.compile(
+    r"\b(?:your|you|insureds?|policyholders?|customers?|clients?|business(?:es)?(?! interruption| income)|"
+    r"compan(?:y|ies) has|"
+    r"suppliers?|factory|factories|plant|store|shop|operations?)\b[^.;:]*$",
+    re.IGNORECASE)
 FAVOURABLE_LOSS_RATIO_PCT = 65.0   # scope loss + ALAE ratio at or below this reads as a profitable book
 
 _RULE_IDS = re.compile(r"FMVSS\s+No\.?\s*\d+[a-z]?|RIN\s+\d{4}-[A-Z0-9]{4}|\d+\s+CFR\s+(?:Part\s+|§\s*)?\d+(?:\.\d+)?|MDL-\d+",
@@ -234,7 +239,11 @@ def _claims_outlook(analytics: Dict[str, Any], rec: Dict[str, Any], proxy: bool)
 def _bad_experience(text: str) -> Optional[Tuple[str, int, int]]:
     """('exit_and_losses' | 'exit' | 'losses', start, end of the span to quote) when the text reports carriers
     retreating from the cover or losing money on it."""
-    ex, lo = _EXIT.search(text or ""), _LOSSES.search(text or "")
+    text = text or ""
+    # "your business has to shut down" describes the customer's loss, not an insurer leaving the market
+    ex = next((m for m in _EXIT.finditer(text) if not _CUSTOMER_SUBJECT.search(text[max(0, m.start() - 45):m.start()])),
+              None)
+    lo = _LOSSES.search(text)
     if ex and lo:
         a, b = min(ex.start(), lo.start()), max(ex.end(), lo.end())
         return ("exit_and_losses", a, b) if b - a < 400 else ("exit_and_losses", ex.start(), ex.end())

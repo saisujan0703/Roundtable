@@ -38,6 +38,10 @@ RISK = conflicts._risk_words(BRIEF)
     ("The exit ramp was closed", None),
     ("Drivers who exit the vehicle are covered", None),
     ("Acme offers an optional endorsement", None),
+    ("covers extra expenses in the event that your business has to shut down or relocate due to fire", None),
+    ("if a key supplier goes bankrupt the insured loses income", None),
+    ("The insurer went bankrupt in 2022", "exit"),
+    ("Carrier X discontinued its contingent business interruption cover after heavy losses", "exit_and_losses"),
 ])
 def test_bad_experience_detection(text, expected):
     hit = conflicts._bad_experience(text)
