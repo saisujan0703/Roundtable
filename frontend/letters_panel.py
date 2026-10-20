@@ -23,9 +23,9 @@ METHOD_LABEL = {
 }
 SCENARIO_NAMES = {
     "covered": "Covered", "not_purchased": "Not purchased", "excluded": "Excluded", "ambiguous": "Unclear cause",
-    "late_notice": "Late notice", "incomplete_proof": "Incomplete proof", "fraud": "SIU red flag",
+    "late_notice": "Late intimation", "incomplete_proof": "Incomplete proof", "fraud": "SIU red flag",
     "large_loss": "Large loss", "recovery": "Subrogation / salvage",
-    "policy_verification": "Policy verification", "state_deadline": "State deadline",
+    "policy_verification": "Policy verification", "state_deadline": "IRDAI timelines",
 }
 
 
@@ -42,7 +42,7 @@ def render_letters(brief: Dict[str, Any], data: Optional[Dict[str, Any]], draft:
     """Render the letters tab. The callables call the backend and return True on success."""
     st.markdown("### Customer Letter Templates")
     st.caption("The letters adjusters send on this coverage, drafted from the handling guideline. Customer details are "
-               "merge fields ClaimCenter fills in when sending; state deadlines and the state-required notice come from the "
+               "merge fields ClaimCenter fills in when sending; IRDAI deadlines and the grievance notice come from the "
                "compliance matrix (Launch operations tab); policy clauses are left as [TBD] for Legal. Each letter is "
                "approved on its own.")
     if data is None:
@@ -98,14 +98,15 @@ def render_letters(brief: Dict[str, Any], data: Optional[Dict[str, Any]], draft:
     with st.expander("ℹ️ Merge fields ClaimCenter fills in"):
         st.markdown("\n".join(f"- `{{{{{k}}}}}` — {v}" for k, v in data["merge_fields"].items()))
     notices = data.get("state_notices") or []
-    with st.expander(f"🏛️ State merge fields by launch state ({len(notices)})"):
+    with st.expander(f"🏛️ Deadline and grievance merge fields by launch state ({len(notices)})"):
         if not notices:
-            st.caption("Open the Launch operations tab to build the state compliance matrix.")
+            st.caption("Open the Launch operations tab to build the compliance matrix.")
         for n in notices:
             flag = "✅ confirmed" if n["status"] == "Confirmed" else (
-                "⚠️ NAIC placeholder" if n["placeholder"] else "⚠️ not confirmed")
+                "⚠️ no rule loaded" if n["placeholder"] else "⚠️ not confirmed")
             st.markdown(f"**{n['state']}** · {flag} · {_md(n['citation'])}  \n"
-                        f"Acknowledge: {n['acknowledge']} · Decision: {_md(n['decision'])} · Payment: {n['payment']}  \n"
+                        f"Surveyor / acknowledge: {_md(n['acknowledge'])} · Decision: {_md(n['decision'])} · "
+                        f"Payment: {n['payment']}  \n"
                         f"`{{{{state_required_notice}}}}` → {_md(n['denial_notice'])}")
 
     st.markdown("---")

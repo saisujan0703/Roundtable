@@ -230,7 +230,9 @@ def check_names(text: str, source_text: str, location: str) -> List[Dict[str, st
 
 
 _DAYS_RE = re.compile(r"\b\d+\s*(?:calendar\s+|business\s+|working\s+)?days?\b", re.I)
-_PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?!\d)")
+_PHONE_RE = re.compile(r"(?<!\d)(?:(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}"   # US
+                       r"|(?:\+91[\s-]?|0)?[6-9]\d{4}[\s-]?\d{5}"                        # Indian mobile
+                       r"|1800[\s-]?\d{3,4}[\s-]?\d{3,4})(?!\d)")                          # Indian toll-free
 _EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]+\b")
 _CLAUSE_RE = re.compile(r"\b(?:clause\s+)?(C\d{2,3})\b")
 

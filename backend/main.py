@@ -247,6 +247,8 @@ class ComplianceStateRequest(BaseModel):
     decision_day_type: Optional[str] = None
     payment_days: Optional[int] = Field(None, ge=1, le=365)
     payment_day_type: Optional[str] = None
+    acknowledge_trigger: Optional[str] = Field(None, max_length=2000)
+    decision_trigger: Optional[str] = Field(None, max_length=2000)
     extension_rule: Optional[str] = Field(None, max_length=2000)
     denial_notice: Optional[str] = Field(None, max_length=2000)
     status: Optional[str] = Field(None, description="Not confirmed | Confirmed")
@@ -1023,7 +1025,7 @@ def approve_customer_letter(brief_id: int, key: str):
 
 
 # ---------------------------------------------------------------------------
-# Launch operations plan (staffing, reinsurance, statutory reporting, Medicare, litigation, state footprint)
+# Launch operations plan (staffing, reinsurance, IRDAI reporting, MACT / EC claims, litigation, state footprint)
 # ---------------------------------------------------------------------------
 def _brief_json(conn, brief_id: int) -> dict:
     row = conn.execute("SELECT title, brief_json FROM briefs WHERE id = ?", (brief_id,)).fetchone()
@@ -1074,7 +1076,7 @@ def get_operations(brief_id: int, volume_factor: float = 1.0, caseload: Optional
 
 
 # ---------------------------------------------------------------------------
-# State claims compliance matrix
+# Claims compliance matrix (IRDAI claim-settlement rules per launch state)
 # ---------------------------------------------------------------------------
 def _build_matrix(brief: dict) -> dict:
     plan = launch_operations.build_plan(brief)
@@ -1092,7 +1094,15 @@ def _load_compliance(conn, brief_id: int) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail=f"Brief #{brief_id} not found")
     if row["compliance_json"]:
-        return json.loads(row["compliance_json"])
+        matrix = json.loads(row["compliance_json"])
+        if not state_compliance.needs_upgrade(matrix):
+            return matrix
+        # The claim rules changed since this matrix was built: rebuild it, keeping launch flags and notes
+        matrix = state_compliance.carry_over(
+            _build_matrix(json.loads(row["brief_json"]) if row["brief_json"] else {"title": row["title"]}), matrix)
+        conn.execute("UPDATE briefs SET compliance_json = ? WHERE id = ?", (json.dumps(matrix), brief_id))
+        conn.commit()
+        return matrix
     # First access: one row per state in the product's footprint, every state a launch state
     matrix = _build_matrix(json.loads(row["brief_json"]) if row["brief_json"] else {"title": row["title"]})
     conn.execute("UPDATE briefs SET compliance_json = ? WHERE id = ?", (json.dumps(matrix), brief_id))
@@ -1102,7 +1112,7 @@ def _load_compliance(conn, brief_id: int) -> dict:
 
 @app.get("/api/briefs/{brief_id}/compliance")
 def get_compliance(brief_id: int):
-    """State claim-handling compliance matrix for the brief's footprint, with confirmation summary."""
+    """Claim-settlement compliance matrix for the brief's state footprint, with confirmation summary."""
     with get_connection() as conn:
         return _compliance_response(brief_id, _load_compliance(conn, brief_id))
 

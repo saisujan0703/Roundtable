@@ -1,13 +1,15 @@
 """
-State Claims Compliance Matrix
-==============================
-One row per state where the product's scope earns exposure: the claim-handling deadlines (acknowledge,
-decide, pay), the extension rule and the denial notice that state requires, taken from
+Claims Compliance Matrix
+========================
+One row per state where the product's scope earns exposure: the claim-settlement deadlines (acknowledge,
+decide, pay), the extension rule and the rejection / grievance notice, taken from
 sources/state_claims_rules.json. Compliance decides which states the product launches in and confirms each
 row (correcting the rule where needed); a row is never confirmed by Roundtable.
 
-States without a loaded rule show the NAIC model as a placeholder and are flagged, so Compliance supplies
-the real rule before confirming them.
+In India claim settlement is regulated nationally, so every state gets the same rule for the product's line:
+the IRDAI Master Circular on Protection of Policyholders' Interests, 2024, or the Employee's Compensation
+Act, 1923 for employee's compensation. A 'states' entry in the rules file overrides it for one state.
+Deadlines the rule leaves open are blank and must be entered before a row is confirmed.
 """
 from __future__ import annotations
 
@@ -19,7 +21,9 @@ from typing import Any, Dict, List, Optional
 
 RULES_PATH = Path(__file__).resolve().parent.parent / "sources" / "state_claims_rules.json"
 STATUSES = ("Not confirmed", "Confirmed")
-EDITABLE_RULE_FIELDS = ("acknowledge_days", "decision_days", "payment_days", "extension_rule", "denial_notice")
+EDITABLE_RULE_FIELDS = ("acknowledge_days", "decision_days", "payment_days", "acknowledge_trigger", "decision_trigger",
+                        "extension_rule", "denial_notice")
+DAY_FIELDS = ("acknowledge_days", "decision_days", "payment_days")
 DAY_TYPES = ("calendar", "business")
 
 
@@ -29,12 +33,16 @@ def load_rules() -> Dict[str, Any]:
 
 
 def rule_for(state: str, products: List[str]) -> Dict[str, Any]:
-    """The loaded rule for a state, if it applies to these products; otherwise the NAIC placeholder."""
+    """The rule for a state and these products: a state override if one applies, else the line's own national
+    rule when every product is on that line, else the national default."""
     rules = load_rules()
-    r = rules["states"].get(state)
+    r = (rules.get("states") or {}).get(state)
     if r and (not r.get("lines") or not products or set(r["lines"]) & set(products)):
         return {**r, "placeholder": False}
-    return {**rules["default"], "placeholder": True}
+    for line_rule in (rules.get("lines") or {}).values():
+        if products and set(products) <= set(line_rule["lines"]):
+            return {**line_rule, "placeholder": False}
+    return {**rules["default"], "placeholder": bool(rules["default"].get("placeholder"))}
 
 
 def build_matrix(plan: Dict[str, Any], products: List[str]) -> Dict[str, Any]:
@@ -48,9 +56,9 @@ def build_matrix(plan: Dict[str, Any], products: List[str]) -> Dict[str, Any]:
             "source": r["source"], "citation": r["citation"], "placeholder": r["placeholder"],
             "verified": r.get("verified"), "verified_url": r.get("verified_url"),
             "verification_note": r.get("verification_note"),
-            **{k: r.get(k) for k in ("acknowledge_days", "acknowledge_day_type", "decision_days", "decision_day_type",
-                                     "decision_trigger", "payment_days", "payment_day_type", "extension_rule",
-                                     "denial_notice")},
+            **{k: r.get(k) for k in ("acknowledge_days", "acknowledge_day_type", "acknowledge_trigger", "decision_days",
+                                     "decision_day_type", "decision_trigger", "payment_days", "payment_day_type",
+                                     "extension_rule", "denial_notice")},
             "status": "Not confirmed", "confirmed_by": "", "note": "", "edited": False, "updated_at": None,
         })
     return {"generated_at": datetime.utcnow().isoformat(), "products": products, "states": rows}
@@ -69,7 +77,7 @@ def update_state(matrix: Dict[str, Any], state: str, fields: Dict[str, Any]) -> 
     for k in EDITABLE_RULE_FIELDS:
         if k in fields and fields[k] is not None and fields[k] != row.get(k):
             v = fields[k]
-            if k.endswith("_days"):
+            if k in DAY_FIELDS:
                 v = int(v) if v != "" else None
                 if v is not None and not 0 < v <= 365:
                     raise ValueError(f"{k} must be between 1 and 365")
@@ -98,9 +106,12 @@ def update_state(matrix: Dict[str, Any], state: str, fields: Dict[str, Any]) -> 
             if not row["confirmed_by"]:
                 raise ValueError(f"{state}: enter who confirmed the rule before confirming it.")
             if row["placeholder"]:
-                raise ValueError(f"{state}: no state rule is loaded; enter this state's deadlines and notice first.")
-            if "[TBD" in (row.get("denial_notice") or "") + (row.get("extension_rule") or ""):
-                raise ValueError(f"{state}: replace the [TBD] items in the denial notice and extension rule first.")
+                raise ValueError(f"{state}: no rule is loaded; enter this state's deadlines and notice first.")
+            missing = [k.replace("_days", "") for k in DAY_FIELDS if not row.get(k)]
+            if missing:
+                raise ValueError(f"{state}: enter the {', '.join(missing)} days first.")
+            if any("[TBD" in (row.get(k) or "") for k in EDITABLE_RULE_FIELDS if k not in DAY_FIELDS):
+                raise ValueError(f"{state}: replace the [TBD] items in the triggers, extension rule and notice first.")
         row["status"] = fields["status"]
     row["updated_at"] = datetime.utcnow().isoformat()
     return matrix
@@ -121,20 +132,32 @@ def summarize(matrix: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 def state_notices(matrix: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Per launch state: what {{state_required_notice}} and the deadline merge fields resolve to."""
     def days(n, t):
-        return f"{n} {t} days" if n else "[TBD]"
+        return f"{n} {t} day{'s' if n != 1 else ''}" if n else "[TBD]"
     return [{"state": r["state"], "status": r["status"], "citation": r["citation"], "placeholder": r["placeholder"],
              "denial_notice": r["denial_notice"],
-             "acknowledge": days(r["acknowledge_days"], r["acknowledge_day_type"]),
+             "acknowledge": f"{days(r['acknowledge_days'], r['acknowledge_day_type'])}: "
+                            f"{r.get('acknowledge_trigger') or ''}".rstrip(": "),
              "decision": f"{days(r['decision_days'], r['decision_day_type'])} {r.get('decision_trigger') or ''}".strip(),
              "payment": days(r["payment_days"], r["payment_day_type"])}
             for r in (matrix or {}).get("states") or [] if r["launch"]]
 
 
+def needs_upgrade(matrix: Dict[str, Any]) -> bool:
+    """A stored matrix built from rules that have since changed (e.g. the US state rules before India)."""
+    products = matrix.get("products") or []
+    return any(r.get("source") != rule_for(r["state"], products)["source"] for r in matrix.get("states") or [])
+
+
 def carry_over(new: Dict[str, Any], old: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Rebuilt matrix (e.g. after the brief's scope changed): keep Compliance's work on states present in both."""
+    """Rebuilt matrix (e.g. after the brief's scope changed): keep Compliance's work on states present in both.
+
+    When the governing rule itself changed (a different source), only the launch flag and note carry over:
+    the old deadlines and confirmation were for another rule."""
     prev = {r["state"]: r for r in (old or {}).get("states") or []}
     for r in new["states"]:
         o = prev.get(r["state"])
-        if o:
+        if o and o.get("source") == r["source"]:
             r.update({k: o[k] for k in o if k not in ("exposure_share_pct", "claims")})
+        elif o:
+            r.update({k: o[k] for k in ("launch", "note") if k in o})
     return new

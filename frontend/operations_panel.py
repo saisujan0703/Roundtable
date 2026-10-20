@@ -1,10 +1,11 @@
 """
 Launch Operations panel
 =======================
-The operational, regulatory and financial setup Claims owns before launch: the state claims compliance matrix
-(launch states, deadlines, required notices, Compliance confirmation), adjuster staffing, large-loss and
-reinsurance thresholds, statutory reporting lines, Medicare Section 111 and litigation hot spots.
-Figures come from backend/operations.py; state rules from sources/state_claims_rules.json via backend/compliance.py.
+The operational, regulatory and financial setup Claims owns before launch: the claims compliance matrix
+(launch states, IRDAI deadlines, grievance notice, Compliance confirmation), adjuster staffing, large-loss and
+reinsurance thresholds, IRDAI reporting lines, motor third-party (MACT) and employee's compensation claims, and
+litigation hot spots. Figures come from backend/operations.py; rules from sources/state_claims_rules.json via
+backend/compliance.py.
 """
 from __future__ import annotations
 
@@ -21,16 +22,28 @@ def _md(text: Optional[str]) -> str:
 
 
 def _money(v: Optional[float]) -> str:
-    return "n/a" if v is None else f"${v:,.0f}"
+    """Rupees with Indian digit grouping: 1234567 -> "₹12,34,567"."""
+    if v is None:
+        return "n/a"
+    n = round(v)
+    digits, head = str(abs(n)), []
+    rest, tail = digits[:-3], digits[-3:]
+    while len(rest) > 2:
+        head.insert(0, rest[-2:])
+        rest = rest[:-2]
+    if rest:
+        head.insert(0, rest)
+    return ("-" if n < 0 else "") + "₹" + ",".join(head + [tail])
 
 
 def _render_compliance(bid: int, data: Optional[Dict[str, Any]],
                        save_state: Callable[[str, Dict[str, Any]], bool]) -> None:
-    st.markdown("#### State claim-handling compliance")
-    st.caption("One row per state where this product's scope earns exposure. Untick the states it won't launch in, "
-               "then Compliance checks each launch state's deadlines and required denial notice and confirms it. "
-               "ClaimCenter diaries, the state-deadline test scenarios and the letters' state merge fields use "
-               "these rows.")
+    st.markdown("#### Claim-settlement compliance (IRDAI)")
+    st.caption("One row per state where this product's scope earns exposure. Claim settlement is regulated nationally "
+               "by IRDAI, so every state starts from the same rule. Untick the states it won't launch in, then "
+               "Compliance checks each launch state's surveyor-allocation, decision and payment deadlines and the "
+               "rejection / grievance notice and confirms it. ClaimCenter diaries, the IRDAI-timeline test scenarios "
+               "and the letters' merge fields use these rows.")
     if not data:
         st.error("Could not load the compliance matrix from the backend.")
         return
@@ -41,7 +54,7 @@ def _render_compliance(bid: int, data: Optional[Dict[str, Any]],
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Launch states", f"{s['launch_states']} / {s['states']}")
     c2.metric("Confirmed", f"{s['confirmed']} / {s['launch_states']}")
-    c3.metric("No state rule loaded", s["placeholders"])
+    c3.metric("No rule loaded", s["placeholders"])
     c4.metric("Exposure covered", f"{s['launch_exposure_pct']}%")
     st.caption(f"⚠️ {data['rules_note']}")
     if s["ready"]:
@@ -50,7 +63,7 @@ def _render_compliance(bid: int, data: Optional[Dict[str, Any]],
     rows = m["states"]
     df = pd.DataFrame([{
         "state": r["state"], "exposure_pct": r["exposure_share_pct"], "claims": r["claims"],
-        "launch": r["launch"], "rule": "NAIC placeholder" if r["placeholder"] else ("Edited" if r["edited"] else "Loaded"),
+        "launch": r["launch"], "rule": "Not loaded" if r["placeholder"] else ("Edited" if r["edited"] else "Loaded"),
         "acknowledge_days": r["acknowledge_days"], "decision_days": r["decision_days"],
         "payment_days": r["payment_days"], "status": r["status"], "confirmed_by": r["confirmed_by"], "note": r["note"],
     } for r in rows])
@@ -63,7 +76,8 @@ def _render_compliance(bid: int, data: Optional[Dict[str, Any]],
             "claims": st.column_config.NumberColumn("Claims"),
             "launch": st.column_config.CheckboxColumn("Launch"),
             "rule": st.column_config.TextColumn("Rule"),
-            "acknowledge_days": st.column_config.NumberColumn("Ack. days", min_value=1, max_value=365, step=1),
+            "acknowledge_days": st.column_config.NumberColumn("Surveyor / ack. days", min_value=1, max_value=365,
+                                                              step=1),
             "decision_days": st.column_config.NumberColumn("Decision days", min_value=1, max_value=365, step=1),
             "payment_days": st.column_config.NumberColumn("Pay days", min_value=1, max_value=365, step=1),
             "status": st.column_config.SelectboxColumn("Status", options=data["statuses"]),
@@ -97,13 +111,13 @@ def _render_compliance(bid: int, data: Optional[Dict[str, Any]],
         elif not changed:
             st.info("No changes to save.")
 
-    with st.expander("📜 Rule detail per launch state (day types, extension rule, required denial notice)"):
+    with st.expander("📜 Rule detail per launch state (what starts each clock, extension rule, grievance notice)"):
         launch = [r for r in rows if r["launch"]]
         pick = st.selectbox("State", [r["state"] for r in launch], key=f"cm_pick_{bid}") if launch else None
         r = next((x for x in launch if x["state"] == pick), None)
         if r:
             st.caption(f"Source: {r['source']} — {r['citation']}"
-                       + (" · **NAIC placeholder: enter this state's real rule**" if r["placeholder"] else ""))
+                       + (" · **No rule loaded: enter this state's rule**" if r["placeholder"] else ""))
             if r.get("verified_url"):
                 st.caption(f"Checked against [{r['verified_url']}]({r['verified_url']}) on {r.get('verified')}"
                            + (f" — ⚠️ {r['verification_note']}" if r.get("verification_note") else ""))
@@ -114,13 +128,16 @@ def _render_compliance(bid: int, data: Optional[Dict[str, Any]],
                                     index=types.index(r["acknowledge_day_type"] or "calendar"))
                 dec_t = b.selectbox("Decision: day type", types, index=types.index(r["decision_day_type"] or "calendar"))
                 pay_t = c.selectbox("Payment: day type", types, index=types.index(r["payment_day_type"] or "calendar"))
-                st.caption(f"Decision clock starts {r.get('decision_trigger') or '[TBD]'}.")
-                ext = st.text_area("Extension rule", value=r["extension_rule"] or "", height=80)
-                notice = st.text_area("Required denial / complaint notice ({{state_required_notice}})",
-                                      value=r["denial_notice"] or "", height=110)
+                ack_tr = st.text_input("Surveyor / acknowledgement: what it covers", value=r.get("acknowledge_trigger") or "")
+                dec_tr = st.text_input("Decision clock starts", value=r.get("decision_trigger") or "")
+                ext = st.text_area("Extension rule", value=r["extension_rule"] or "", height=110)
+                notice = st.text_area("Rejection / grievance notice ({{state_required_notice}})",
+                                      value=r["denial_notice"] or "", height=140)
                 if st.form_submit_button("Save rule", type="primary"):
                     if save_state(r["state"], {"acknowledge_day_type": ack_t, "decision_day_type": dec_t,
-                                               "payment_day_type": pay_t, "extension_rule": ext, "denial_notice": notice}):
+                                               "payment_day_type": pay_t, "acknowledge_trigger": ack_tr,
+                                               "decision_trigger": dec_tr, "extension_rule": ext,
+                                               "denial_notice": notice}):
                         st.rerun()
 
 
@@ -163,11 +180,11 @@ def _render_large_losses(plan: Dict[str, Any]) -> None:
 
 
 def _render_reporting(plan: Dict[str, Any]) -> None:
-    sr, med, lit = plan.get("statutory_reporting") or {}, plan.get("medicare") or {}, plan.get("litigation") or {}
-    st.markdown("#### Statutory reporting (suggested — Finance confirms)")
+    sr, inj, lit = plan.get("statutory_reporting") or {}, plan.get("injury_claims") or {}, plan.get("litigation") or {}
+    st.markdown("#### IRDAI reporting lines (suggested — Finance confirms)")
     if sr.get("has_data"):
         st.dataframe(pd.DataFrame([{"Product": r["product"], "Exposure": r["exposure_type"], "Coverage": r["coverage_type"],
-                                    "Share %": r["share_pct"], "Annual Statement line": r["statement_line"],
+                                    "Share %": r["share_pct"], "IRDAI line of business": r["statement_line"],
                                     "Note": r["note"] or ""} for r in sr["rows"]]),
                      hide_index=True, width="stretch")
     else:
@@ -175,19 +192,23 @@ def _render_reporting(plan: Dict[str, Any]) -> None:
 
     a, b = st.columns(2)
     with a:
-        st.markdown("#### Medicare Section 111")
-        if med.get("applies"):
-            st.warning(f"Applies: {med['bi_claims']} claims ({med['bi_share_pct']}%) carry "
-                       f"{', '.join(med['exposure_types'])} exposures. Add the coverage to the Section 111 reporting feed "
-                       "and query Medicare status at FNOL.")
-        else:
-            st.success("No bodily-injury or medical exposures in this history; likely N/A.")
+        st.markdown("#### Third-party (MACT) and employee's compensation claims")
+        if inj.get("mact_claims"):
+            st.warning(f"{inj['mact_claims']} claims ({inj['mact_share_pct']}%) carry motor third-party injury, decided "
+                       "by the Motor Accident Claims Tribunal. Name a designated officer for the police accident "
+                       "reports and settlement offers (CMV Rules, rule 150A); deposit awards within 30 days.")
+        if inj.get("ec_claims"):
+            st.warning(f"{inj['ec_claims']} claims ({inj['ec_share_pct']}%) are employee's compensation: due from the "
+                       "date of the accident; more than one month late brings 12% interest and up to 50% penalty "
+                       "(EC Act, 1923, s.4A).")
+        if not inj.get("applies"):
+            st.success("No third-party injury or employee's compensation exposures in this history; likely N/A.")
     with b:
         st.markdown("#### Litigation")
         if lit:
             base = f" vs {lit['baseline_rate_pct']}% baseline" if lit.get("baseline_rate_pct") is not None else ""
             st.caption(f"Litigation rate {lit['rate_pct']}%{base} ({lit['litigated_claims']} claims). States with the "
-                       f"highest rate (≥10 claims) — where panel counsel is needed first:")
+                       f"highest rate (≥10 claims) — where panel advocates are needed first:")
             if lit["states"]:
                 st.dataframe(pd.DataFrame([{"State": s["state"], "Claims": s["claims"], "Litigated": s["litigated"],
                                             "Rate %": s["rate_pct"]} for s in lit["states"]]),
@@ -200,7 +221,7 @@ def render_operations(brief: Dict[str, Any], get_plan: Callable[[float, Optional
     """Render the tab. *get_plan(volume_factor, caseload)* and *save_state(state, fields)* call the backend."""
     bid = brief["id"]
     st.markdown("### Launch Operations")
-    st.caption("State compliance, staffing, reinsurance, statutory reporting, Medicare and litigation setup for this "
+    st.caption("IRDAI claim timelines, staffing, reinsurance, IRDAI reporting, MACT / EC claims and litigation setup for this "
                "coverage, computed from the same claims data as the brief.")
 
     _render_compliance(bid, compliance, save_state)

@@ -99,13 +99,13 @@ def criteria(row: Dict[str, Any]) -> List[Dict[str, Any]]:
                            f"{rt['not_run']} not run."))
 
     if not matrix:
-        out.append(_crit("compliance", "State compliance confirmed for every launch state", False,
+        out.append(_crit("compliance", "IRDAI claim timelines confirmed for every launch state", False,
                          "Compliance matrix not opened yet (Launch operations tab)."))
     else:
         s = compliance.summarize(matrix)
-        out.append(_crit("compliance", "State compliance confirmed for every launch state", s["ready"],
+        out.append(_crit("compliance", "IRDAI claim timelines confirmed for every launch state", s["ready"],
                          f"{s['confirmed']} of {s['launch_states']} launch states confirmed"
-                         + (f"; {s['placeholders']} still on the NAIC placeholder" if s["placeholders"] else "") + "."))
+                         + (f"; {s['placeholders']} have no rule loaded" if s["placeholders"] else "") + "."))
     return out
 
 

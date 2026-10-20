@@ -7,9 +7,10 @@ the same claims data as the brief:
 - state footprint            where the product's exposure and claims sit (input to the compliance matrix)
 - staffing                   adjusters needed, from claim volume, cycle time and today's caseloads (Little's law)
 - large losses & reinsurance how many claims a year would cross each candidate reporting threshold; CAT share
-- statutory reporting        the NAIC Annual Statement line each exposure type would report to (suggested)
-- Medicare Section 111       whether bodily-injury / WC / no-fault payments make MMSEA reporting apply
-- litigation                 states where these claims are litigated most (panel counsel)
+- statutory reporting        the IRDAI line of business (segment) each exposure type would report under (suggested)
+- injury claims              motor third-party claims decided by the Motor Accident Claims Tribunal (MACT) and
+                             employee's compensation claims under the EC Act, 1923, with their statutory deadlines
+- litigation                 states where these claims are litigated most (panel advocates)
 
 Every figure is computed here from roundtable.db. Treaty terms, caseload standards and statutory
 classifications are business decisions, so they appear as [TBD] or as "suggested — confirm".
@@ -26,31 +27,31 @@ from backend import analytics
 LARGE_LOSS_THRESHOLDS = (500_000, 1_000_000, 2_500_000, 5_000_000, 10_000_000)   # Rs 5 lakh to Rs 1 crore
 MIN_STATE_CLAIMS = 10  # per state before a litigation rate is shown
 
-# NAIC Annual Statement lines (Statutory Page 14 / U&I exhibit) by product and exposure type.
-_AUTO_PD = {"VehicleDamage", "TowOnly", "LossOfUseDamage"}
-_AUTO_LIAB = {"BodilyInjuryDamage", "PropertyDamage", "MedPay"}
-_BI_EXPOSURES = {"BodilyInjuryDamage", "MedPay", "LostWages", "WCInjuryDamage"}
+# IRDAI lines of business (the segments of the insurer's IRDAI returns and public disclosures) by product and
+# exposure type. Suggested only: Finance confirms the segment, e.g. where a package policy is split.
+_AUTO_OD = {"VehicleDamage", "TowOnly", "LossOfUseDamage"}
+_AUTO_TP = {"BodilyInjuryDamage", "PropertyDamage"}
+_MACT_EXPOSURES = {"BodilyInjuryDamage"}          # third-party death / injury: decided by the MACT
+_EC_EXPOSURES = {"WCInjuryDamage", "LostWages"}   # employee's compensation
 
 
 def _statement_line(product: str, exposure: str) -> Dict[str, Optional[str]]:
-    if product == "PersonalAuto":
-        if exposure in _AUTO_PD:
-            return {"line": "21.1 Private passenger auto physical damage", "note": None}
-        if exposure in _AUTO_LIAB:
-            return {"line": "19.2 Other private passenger auto liability",
-                    "note": "19.1 (no-fault) if paid as PIP in a no-fault state" if exposure == "MedPay" else None}
-    if product == "BusinessAuto":
-        if exposure in _AUTO_PD:
-            return {"line": "21.2 Commercial auto physical damage", "note": None}
-        if exposure in _AUTO_LIAB:
-            return {"line": "19.4 Other commercial auto liability",
-                    "note": "19.3 (no-fault) if paid as PIP in a no-fault state" if exposure == "MedPay" else None}
-    if product == "HOPHomeowners":
-        return {"line": "4 Homeowners multiple peril", "note": None}
-    if product == "CommercialProperty":
-        return {"line": "1 Fire / 2.1 Allied lines", "note": "5.1 Commercial multiple peril if sold in a package"}
+    if product in ("PersonalAuto", "BusinessAuto"):
+        if exposure in _AUTO_OD:
+            return {"line": "Motor OD (own damage)", "note": None}
+        if exposure in _AUTO_TP:
+            return {"line": "Motor TP (third-party liability)",
+                    "note": "statutory cover under the Motor Vehicles Act, 1988" if exposure == "BodilyInjuryDamage" else None}
+        if exposure == "MedPay":
+            return {"line": "Personal Accident",
+                    "note": "compulsory PA cover for the owner-driver; confirm whether it is reported within Motor"}
+    if product in ("HOPHomeowners", "CommercialProperty"):
+        if exposure == "BodilyInjuryDamage":
+            return {"line": "Liability (public / product)", "note": None}
+        return {"line": "Fire",
+                "note": "includes business interruption (fire loss of profits)" if exposure == "LossOfUseDamage" else None}
     if product == "WorkersComp":
-        return {"line": "16 Workers' compensation", "note": None}
+        return {"line": "Workmen's Compensation / Employer's Liability", "note": None}
     return {"line": None, "note": "[TBD — Statutory Reporting]"}
 
 
@@ -203,13 +204,18 @@ def statutory_reporting(tc: pd.DataFrame) -> Dict[str, Any]:
     return {"has_data": True, "rows": rows[:12], "lines": sorted({r["statement_line"] for r in rows})}
 
 
-def medicare(tc: pd.DataFrame) -> Dict[str, Any]:
+def injury_claims(tc: pd.DataFrame) -> Dict[str, Any]:
+    """Claims with third-party injury on motor (decided by the MACT) or employee injury (EC Act, 1923)."""
     exp = analytics._data()["exposures"]
-    e = exp[exp["claim_id"].isin(tc["claim_id"])]
-    bi_claims = e.loc[e["exposure_type"].isin(_BI_EXPOSURES), "claim_id"].nunique()
-    return {"applies": bool(bi_claims), "bi_claims": int(bi_claims),
-            "bi_share_pct": _r(100 * bi_claims / max(len(tc), 1)),
-            "exposure_types": sorted(set(e["exposure_type"]) & _BI_EXPOSURES)}
+    e = exp[exp["claim_id"].isin(tc["claim_id"])].merge(tc[["claim_id", "product_code"]], on="claim_id")
+    motor = e["product_code"].isin(["PersonalAuto", "BusinessAuto"])
+    mact = int(e.loc[motor & e["exposure_type"].isin(_MACT_EXPOSURES), "claim_id"].nunique())
+    ec = int(e.loc[e["exposure_type"].isin(_EC_EXPOSURES), "claim_id"].nunique())
+    n = max(len(tc), 1)
+    return {"applies": bool(mact or ec),
+            "mact_claims": mact, "mact_share_pct": _r(100 * mact / n),
+            "ec_claims": ec, "ec_share_pct": _r(100 * ec / n),
+            "exposure_types": sorted(set(e["exposure_type"]) & (_MACT_EXPOSURES | _EC_EXPOSURES))}
 
 
 def litigation(tc: pd.DataFrame, bc: pd.DataFrame) -> Dict[str, Any]:
@@ -246,6 +252,6 @@ def build_plan(brief: Dict[str, Any], volume_factor: float = 1.0, caseload: Opti
         "staffing": staffing(tc, bc, valuation, volume_factor, caseload),
         "large_losses": large_losses(tc, valuation, cat),
         "statutory_reporting": statutory_reporting(tc),
-        "medicare": medicare(tc),
+        "injury_claims": injury_claims(tc),
         "litigation": litigation(tc, bc),
     }

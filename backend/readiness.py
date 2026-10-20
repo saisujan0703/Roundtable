@@ -3,9 +3,10 @@ Claims Readiness Checklist
 ==========================
 What the Claims department must have in place before a new product launches:
 policy wording reviewed, ClaimCenter configured, reserving guidance set,
-vendors, routing & authority, staffing, intake, payments, training; state
-compliance, statutory and reinsurance reporting, Medicare reporting,
-complaints and records; and post-launch monitoring.
+vendors and surveyors, routing & authority, staffing, intake, payments,
+training; IRDAI claim-settlement timelines, IRDAI and reinsurance reporting,
+motor third-party (MACT) and employee's compensation claims, grievances and
+records; and post-launch monitoring.
 
 Each item carries guidance derived from the brief's own claims analytics and
 launch operations plan (numbers are quoted from backend.analytics /
@@ -30,7 +31,7 @@ STAGES = {
 # Items added after the first checklists were stored; a stored checklist missing them is rebuilt (keeping progress)
 ADDED_ITEM_IDS = {"staffing_plan", "pc_cc_integration", "intake_channels", "litigation_management", "cat_response",
                   "tpa_delegation", "payments_setup", "state_compliance", "stat_reporting", "reinsurance_reporting",
-                  "medicare_reporting", "complaints_process", "records_privacy"}
+                  "injury_claims_statutory", "complaints_process", "records_privacy"}
 
 
 DENIAL_NAMES = {
@@ -45,7 +46,18 @@ DENIAL_NAMES = {
 
 
 def _money(v: Optional[float]) -> str:
-    return "n/a" if v is None else f"${v:,.0f}"
+    """Rupees with Indian digit grouping: 1234567 -> "₹12,34,567"."""
+    if v is None:
+        return "n/a"
+    n = round(v)
+    digits, head = str(abs(n)), []
+    rest, tail = digits[:-3], digits[-3:]
+    while len(rest) > 2:
+        head.insert(0, rest[-2:])
+        rest = rest[:-2]
+    if rest:
+        head.insert(0, rest)
+    return ("-" if n < 0 else "") + "₹" + ",".join(head + [tail])
 
 
 def _item(item_id: str, stage: str, title: str, guidance: str, required: bool = True) -> Dict[str, Any]:
@@ -120,9 +132,11 @@ def _build_items(brief_data: Dict[str, Any], plan: Dict[str, Any]) -> List[Dict[
                f"which of these losses become covered (e.g. sudden failure vs gradual degradation) so adjusters can decide "
                f"consistently." if has and top_denial else
                f"Write a definition of the '{tag}' peril that an adjuster can apply to a real claim without interpretation.")),
-        _item("proof_requirements", "wording", "Set proof-of-loss requirements",
-              "Specify the evidence needed to establish a covered loss (inspection report, diagnostic data, photos, "
-              "repair estimate) and who may provide it."),
+        _item("proof_requirements", "wording", "Set proof-of-loss and survey requirements",
+              "Specify the evidence needed to establish a covered loss (survey report, diagnostic data, photos, repair "
+              "estimate) and who may provide it. Losses of ₹50,000 or more on motor, or ₹1 lakh or more on other lines, "
+              "must be surveyed by an IRDAI-licensed surveyor and loss assessor. Ask only for documents directly related "
+              "to the claim: under the IRDAI Master Circular 2024 no claim may be rejected for want of documents."),
         _item("limits_deductibles", "wording", "Validate limits, sub-limits and deductible against real costs",
               (f"Claims data: median incurred {_money(sev.get('median'))}, 90th percentile {_money(sev.get('p90'))}, "
                f"largest {_money(sev.get('max'))}; {sev.get('total_loss_rate_pct', 0)}% end as total losses. "
@@ -147,9 +161,11 @@ def _build_items(brief_data: Dict[str, Any], plan: Dict[str, Any]) -> List[Dict[
                "Set a default initial reserve per exposure type and a review cadence.")),
         _item("vendor_network", "setup", "Line up vendor / repair network",
               (f"Median cycle time is {h.get('cycle_time_median_days')} days vs {h.get('baseline_cycle_time_median_days')} "
-               f"baseline. Contract specialist vendors (repairers, inspectors, salvage) with capacity for ~"
-               f"{latest_full.get('claims', 0)} claims a year at today's volume." if has else
-               "Identify and contract the repair, inspection and salvage vendors this coverage needs.")),
+               f"baseline. Contract network garages for cashless repair, licensed surveyors and loss assessors, and "
+               f"salvage buyers with capacity for ~{latest_full.get('claims', 0)} claims a year at today's volume. The "
+               f"surveyor must be allocated within 24 hours of intimation and report within 15 days." if has else
+               "Identify and contract the network garages, licensed surveyors and salvage buyers this coverage needs; "
+               "the surveyor must be allocated within 24 hours of intimation and report within 15 days.")),
         _item("routing_authority", "setup", "Set claim routing and payment authority",
               (f"Today these claims land with: {groups}. Decide the handling group, the large-loss referral threshold "
                f"(largest loss {_money(sev.get('max'))}), and adjuster payment authority levels." if has else
@@ -213,75 +229,103 @@ def _operations_items(h: Dict[str, Any], plan: Dict[str, Any]) -> List[Dict[str,
               "Turn the handling guideline's FNOL questions (section 3) into the call-center script, the digital FNOL "
               "form and agent instructions, and brief the intake team on routing."
               + (f" {late}% of these claims today are reported more than 30 days after the loss; the script must "
-                 f"record the reason for any delay." if late is not None else "")),
+                 f"record the reason for any delay." if late is not None else "")
+              + " Late intimation alone is never a reason to reject or close a claim (IRDAI Master Circular 2024)."),
         _item("litigation_management", "setup", "Set up litigation management and panel counsel",
               (f"Litigation rate {lit['rate_pct']}%"
                + (f" vs {lit['baseline_rate_pct']}% baseline" if lit.get("baseline_rate_pct") is not None else "")
                + f" ({lit['litigated_claims']} litigated claims)."
                + (f" Highest-litigation states: {lit_states}." if lit_states else "")
-               + " Appoint panel and coverage counsel there, and set litigation guidelines and budget approval."
-               if has else "Appoint panel and coverage counsel for the launch states and set litigation guidelines.")),
+               + " Appoint panel advocates there for consumer commission, MACT and civil court matters, and set "
+               "litigation guidelines and budget approval."
+               if has else "Appoint panel advocates for the launch states (consumer commissions, MACT, civil courts) "
+                           "and set litigation guidelines.")),
         _item("cat_response", "setup", "Prepare a catastrophe response plan",
               (f"{ll['cat_claims']} of these claims ({ll['cat_share_of_incurred_pct']}% of incurred) came from "
-               f"catastrophe events ({cat_events}). Define surge staffing, independent-adjuster contracts and CAT coding "
-               f"for this coverage." if has_cat else
+               f"catastrophe events ({cat_events}). Define surge staffing, standby surveyor and garage capacity in "
+               f"flood- and cyclone-prone states, and CAT coding for this coverage." if has_cat else
                "No catastrophe-coded claims in this pattern's history. Confirm with Product whether the covered peril "
                "can produce CAT events; if so, define surge staffing and CAT coding."), required=has_cat),
         _item("tpa_delegation", "setup", "Decide on TPA / delegated authority",
               "If any claims will be handled by a third-party administrator or under delegated authority, contract it, "
-              "set its authority limits, reporting and audit rights, and give it the guideline, letters and state rules.",
+              "set its authority limits, reporting and audit rights, and give it the guideline, letters and IRDAI "
+              "claim timelines.",
               required=False),
         _item("payments_setup", "setup", "Set up claim payments",
-              "Configure payment methods (check, ACH, direct repair), payee rules (lienholders, mortgagees, attorneys), "
-              "OFAC sanctions screening of payees before payment, and Form 1099 tax reporting for vendor and attorney "
-              "payments. Payment deadlines per state come from the compliance matrix."),
+              "Configure payment methods (NEFT / RTGS to a verified bank account, cashless settlement with network "
+              "garages), payee rules (financier under a hypothecation endorsement, nominee, legal heirs), KYC of "
+              "payees, and TDS on surveyor and vendor fees [TBD — Finance: applicable sections]. A claim settled late "
+              "carries interest at bank rate plus 2% from intimation, paid without being asked; the payment deadline "
+              "comes from the compliance matrix."),
     ]
 
 
 def _regulatory_items(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
     has = bool(plan.get("has_data"))
     states = plan.get("states") or []
-    ll, sr, med = plan.get("large_losses") or {}, plan.get("statutory_reporting") or {}, plan.get("medicare") or {}
+    ll, sr = plan.get("large_losses") or {}, plan.get("statutory_reporting") or {}
+    inj = plan.get("injury_claims") or {}
     products = sorted({r["product"] for r in sr.get("rows") or []})
-    no_rule = sum(compliance.rule_for(s["state"], products)["placeholder"] for s in states)
+    rules = [compliance.rule_for(s["state"], products) for s in states]
+    sources = "; ".join(sorted({r["source"] for r in rules}))
+    no_rule = sum(r["placeholder"] for r in rules)
     top = ", ".join(f"{s['state']} {s['exposure_share_pct']}%" for s in states[:3])
     thr = {t["threshold"]: t for t in ll.get("thresholds") or []}
-    t100, t250 = thr.get(1_000_000), thr.get(2_500_000)
+    t10l, t25l = thr.get(1_000_000), thr.get(2_500_000)
+    injury = []
+    if inj.get("mact_claims"):
+        injury.append(
+            f"{inj['mact_claims']} of these claims ({inj['mact_share_pct']}%) carry motor third-party injury. These are "
+            f"decided by the Motor Accident Claims Tribunal (MACT): name a designated officer to receive the police "
+            f"accident reports and make a settlement offer before the Tribunal (Central Motor Vehicles Rules, rule "
+            f"150A), and deposit any award within 30 days of it.")
+    if inj.get("ec_claims"):
+        injury.append(
+            f"{inj['ec_claims']} claims ({inj['ec_share_pct']}%) are employee's compensation. Under the Employee's "
+            f"Compensation Act, 1923, s.4A, compensation is due from the date of the accident, the admitted amount is "
+            f"paid provisionally when liability is disputed, and payment more than one month late brings 12% interest "
+            f"and up to 50% penalty: set ClaimCenter diaries for both.")
     return [
-        _item("state_compliance", "regulatory", "Confirm state claim-handling rules for every launch state",
-              (f"Exposure spans {len(states)} states (largest: {top}); {no_rule} have no state rule loaded yet. In the "
-               f"Launch operations tab, choose the launch states and have Compliance confirm each one's acknowledgement, "
-               f"decision and payment deadlines and its required denial notice. ClaimCenter diaries and the letters' "
+        _item("state_compliance", "regulatory", "Confirm IRDAI claim-settlement timelines for every launch state",
+              (f"Exposure spans {len(states)} states (largest: {top}). Claim settlement is regulated nationally, so "
+               f"every state carries the same rule: {sources}"
+               + (f"; {no_rule} have no rule loaded" if no_rule else "") + ". In the Launch operations tab, choose the "
+               f"launch states and have Compliance confirm the surveyor-allocation, decision and payment deadlines "
+               f"and the rejection / grievance notice. ClaimCenter diaries and the letters' "
                f"{{{{state_required_notice}}}} use these." if has and states else
-               "List the launch states and have Compliance confirm each one's acknowledgement, decision and payment "
-               "deadlines and required denial notice; set them as ClaimCenter diaries.")),
-        _item("stat_reporting", "regulatory", "Map the coverage to statutory and statistical reporting",
-              (f"Suggested NAIC Annual Statement line(s) from the exposures used today: {'; '.join(sr['lines'])}. Finance "
-               f"confirms the line, assigns statistical plan / coverage codes for bureau reporting [TBD — Statutory "
-               f"Reporting], and adds the coverage to claims MI reports." if has and sr.get("has_data") else
-               "Finance assigns the Annual Statement line and statistical plan codes, and adds the coverage to claims "
-               "MI reports.")),
+               "List the launch states and have Compliance confirm the IRDAI surveyor-allocation (24 hours), "
+               "survey-report (15 days) and decision (7 days) timelines, the payment deadline and the rejection / "
+               "grievance notice; set them as ClaimCenter diaries.")),
+        _item("stat_reporting", "regulatory", "Map the coverage to IRDAI reporting lines",
+              (f"Suggested IRDAI line(s) of business from the exposures used today: {'; '.join(sr['lines'])}. Finance "
+               f"confirms the segment for the IRDAI returns and public disclosures, adds the coverage to the claims "
+               f"data reported to the Insurance Information Bureau of India [TBD — Statutory Reporting], and adds it "
+               f"to claims MI reports." if has and sr.get("has_data") else
+               "Finance assigns the IRDAI line of business for the returns and public disclosures, sets up Insurance "
+               "Information Bureau of India reporting, and adds the coverage to claims MI reports.")),
         _item("reinsurance_reporting", "regulatory", "Set large-loss and reinsurance notification rules",
-              (f"Claims of $100,000 or more: {t100['per_year']} a year; $250,000 or more: {t250['per_year']} a year; "
-               f"largest {_money(ll.get('largest'))}. Agree with Reinsurance the notice threshold [TBD — treaty terms] and "
-               f"whether this coverage sits inside the existing treaties, then add a ClaimCenter large-loss notification "
-               f"at that threshold." if has and t100 and t250 else
-               "Agree with Reinsurance the large-loss notice threshold and whether the coverage sits inside existing "
-               "treaties; add a ClaimCenter large-loss notification.")),
-        _item("medicare_reporting", "regulatory", "Medicare Section 111 (MMSEA) reporting",
-              (f"{med['bi_claims']} of these claims ({med['bi_share_pct']}%) carry bodily-injury or medical exposures "
-               f"({', '.join(med['exposure_types'])}). Payments to Medicare beneficiaries on liability, no-fault and "
-               f"workers' compensation claims must be reported under Section 111: add the coverage to the reporting "
-               f"feed and query Medicare status at FNOL." if has and med.get("applies") else
-               "No bodily-injury or medical exposures in this pattern's claims. Mark N/A unless the coverage can pay "
-               "injury or medical claims."), required=bool(has and med.get("applies"))),
-        _item("complaints_process", "regulatory", "Set the complaints and regulator-inquiry process",
-              "Route complaints about this coverage to the complaints unit under its own coverage code, set the response "
-              "time for Department of Insurance inquiries in each launch state [TBD — Compliance], and track complaint "
-              "volume in the launch KPIs."),
+              (f"Claims of ₹10 lakh or more: {t10l['per_year']} a year; ₹25 lakh or more: {t25l['per_year']} a year; "
+               f"largest {_money(ll.get('largest'))}. Agree with Reinsurance the notice threshold [TBD — treaty terms], "
+               f"whether this coverage sits inside the existing treaties and its obligatory cession to GIC Re, then add "
+               f"a ClaimCenter large-loss notification at that threshold." if has and t10l and t25l else
+               "Agree with Reinsurance the large-loss notice threshold, whether the coverage sits inside existing "
+               "treaties and its obligatory cession to GIC Re; add a ClaimCenter large-loss notification.")),
+        _item("injury_claims_statutory", "regulatory", "Motor third-party (MACT) and employee's compensation claims",
+              (" ".join(injury) if has and inj.get("applies") else
+               "No motor third-party injury or employee's compensation exposures in this pattern's claims. Mark N/A "
+               "unless the coverage can pay third-party or employee injury claims."),
+              required=bool(has and inj.get("applies"))),
+        _item("complaints_process", "regulatory", "Set the grievance redressal and Ombudsman process",
+              "Route grievances about this coverage to the Grievance Redressal Officer under its own coverage code: "
+              "acknowledge immediately and resolve within 14 days, with reasons citing the policy terms (IRDAI Master "
+              "Circular 2024). Confirm the grievance system mirrors to IRDAI's Bima Bharosa portal, that every "
+              "rejection and resolution letter names the Insurance Ombudsman with jurisdiction, and that Ombudsman "
+              "awards are complied with within 30 days (₹5,000 a day penalty after that). Track grievance volume in "
+              "the launch KPIs."),
         _item("records_privacy", "regulatory", "Confirm records retention and data privacy",
               "Classify any new data captured at FNOL (e.g. vehicle diagnostics, telematics, photos, medical records) "
-              "for privacy, set its retention period [TBD — Records Management], and confirm consent and vendor access."),
+              "under the Digital Personal Data Protection Act, 2023, record the consent and purpose, set its retention "
+              "period [TBD — Records Management], and confirm surveyor and vendor access."),
     ]
 
 

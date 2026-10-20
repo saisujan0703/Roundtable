@@ -26,7 +26,7 @@ A product manager describes an idea ("EV owners keep getting denied for battery 
 **Claims workspace**
 - Covered-claims set: which historical claims the new coverage would pay.
 - Readiness checklist, claims handling guideline, ClaimCenter test scenarios and customer letter templates.
-- Launch operations plan (staffing, large-loss thresholds, statutory lines, Medicare Section 111, litigation) and a state claims-compliance matrix.
+- Launch operations plan (staffing, large-loss thresholds, IRDAI reporting lines, motor third-party (MACT) and employee's compensation claims, litigation) and a claims-compliance matrix of IRDAI claim-settlement timelines per launch state.
 - Policy-form upload with an exclusion screen against the claims data.
 
 **Across the platform**
@@ -110,7 +110,7 @@ The suite checks the pricing, reserving and business-plan maths against hand cal
 backend/     FastAPI app and all analytics, pricing, LLM, verification and workflow modules
 frontend/    Streamlit app (app.py) and one panel module per section
 data/        Synthetic data generator
-sources/     Curated competitor, regulatory and state claims-rule sources
+sources/     Curated competitor and regulatory sources, and the IRDAI claim-settlement rules
 docs/        Guidewire reference: entity data dictionaries, typelist catalogs, guides
 tests/       pytest suite
 ```
@@ -120,4 +120,4 @@ tests/       pytest suite
 - Synthetic data. Development triangles are reconstructed because the data has no payment or reserve-change history.
 - No live Guidewire integration. The PolicyCenter and ClaimCenter data model is used as reference only.
 - SQLite and a single server: suited to demos and pilots, not production.
-- State claims rules are loaded for 9 states; the rest fall back to the NAIC model and are flagged.
+- Claim-settlement rules follow the IRDAI Master Circular on Protection of Policyholders' Interests, 2024 (retail general insurance) and the Employee's Compensation Act, 1923. Compliance must confirm them, and enter the payment deadline, before launch.
