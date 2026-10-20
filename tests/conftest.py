@@ -19,7 +19,7 @@ os.environ["LLM_PROVIDER"] = "none"   # no model calls from tests
 
 CLAIMS = ("claims.lead@carrier.com", "Claims@2026", "Claims Lead")
 ACTUARY = ("lead.actuary@carrier.com", "Actuary@2026", "Lead Actuary")
-BRIEF_ID = 76                          # EV high-voltage battery brief, has claims experience
+BRIEF_ID = 1                           # EV high-voltage battery demo brief, has claims experience
 
 
 @pytest.fixture(scope="session")

@@ -4,7 +4,7 @@ Roundtable is decision support for launching a new insurance product. It turns c
 
 A product manager describes an idea ("EV owners keep getting denied for battery damage"). Roundtable finds the claims behind it, checks what competitors and regulators say, and gives each team the work it must finish before go-live, ending in a go/no-go launch gate.
 
-> **Demo data.** The claims, policies and exposures in `roundtable.db` are synthetic. Every number and recommendation is directional and needs review by a qualified actuary or claims professional before real use.
+> **Demo data.** The claims, policies and exposures in `roundtable.db` are synthetic data for an Indian general insurer, in rupees (₹12,34,567; ₹ lakh and crore for headline figures). The database ships with eight demo briefs: EV battery, home water damage, flooded car engines, vehicle theft, workplace strain injuries, rooftop solar, drones and personal cyber fraud. Every number and recommendation is directional and needs review by a qualified actuary or claims professional before real use.
 
 ## What it does
 
