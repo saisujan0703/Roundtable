@@ -17,10 +17,10 @@ A product manager describes an idea ("EV owners keep getting denied for battery 
 
 **Actuarial workspace**
 - Rate indication: CAT and large-loss treatment, chain-ladder and Bornhuetter-Ferguson development, trend, behavioural loads, credibility with external benchmarks, and expense, ULAE and profit provisions.
-- Company assumptions with cited sources. Profit and contingencies are derived from the target return on equity.
+- Company assumptions with cited sources (Indian tax and investment-yield defaults). Profit and contingencies are derived from the target return on equity.
 - Rating plan: Poisson GLM frequency relativities, deductible and increased-limit factors, balanced to the indicated premium.
 - Parametric pricing, a 3-year business plan with stress tests, and actual-vs-expected monitoring.
-- Draft actuarial memorandum with exhibits and ASOP references, plus PolicyCenter rating-engine test cases.
+- Draft actuarial memorandum for the Appointed Actuary's technical note under IRDAI Use & File, with exhibits, Institute of Actuaries of India APS 21 references and an expenses-of-management check against the 30% limit, plus PolicyCenter rating-engine test cases.
 - Approval of the selected rate. The approval goes stale when the inputs change.
 
 **Claims workspace**
@@ -120,4 +120,5 @@ tests/       pytest suite
 - Synthetic data. Development triangles are reconstructed because the data has no payment or reserve-change history.
 - No live Guidewire integration. The PolicyCenter and ClaimCenter data model is used as reference only.
 - SQLite and a single server: suited to demos and pilots, not production.
+- Pricing follows the IRDAI Master Circular on General Insurance Business, 2024 and IAI APS 21. The insurer supplies the PMC approval, UIN and Appointed Actuary certificate.
 - Claim-settlement rules follow the IRDAI Master Circular on Protection of Policyholders' Interests, 2024 (retail general insurance) and the Employee's Compensation Act, 1923. Compliance must confirm them, and enter the payment deadline, before launch.

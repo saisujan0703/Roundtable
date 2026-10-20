@@ -162,7 +162,7 @@ PLAN_FIELDS = [  # key, label, min, max, step
     ("fixed_expense_per_year", "Fixed expenses per year ($)", 0.0, 1e8, 5_000.0),
     ("quota_share_pct", "Quota share ceded %", 0.0, 90.0, 5.0),
     ("ceding_commission_pct", "Ceding commission %", 0.0, 60.0, 1.0),
-    ("premium_to_surplus", "Premium-to-surplus ratio", 0.5, 6.0, 0.1),
+    ("premium_to_surplus", "Premium-to-capital ratio", 0.5, 6.0, 0.1),
     ("investment_yield_pct", "Investment yield %", 0.0, 15.0, 0.25),
     ("loss_payout_years", "Average loss payout (years)", 0.1, 10.0, 0.1),
     ("tax_rate_pct", "Tax rate %", 0.0, 50.0, 1.0),
@@ -255,8 +255,9 @@ def render_business_plan(brief: Dict[str, Any], call: Call) -> None:
 # ---------------------------------------------------------------------------
 def render_actuarial_memo(brief: Dict[str, Any], call: Call) -> None:
     st.markdown("### Actuarial memorandum")
-    st.caption("A draft memorandum and exhibits for the rate filing, assembled from the indication, development, "
-               "rating plan and business plan. Nothing is generated: every number is copied from those sections.")
+    st.caption("A draft memorandum and exhibits for the Appointed Actuary's technical note (IRDAI Use & File), "
+               "assembled from the indication, development, rating plan and business plan. Nothing is generated: "
+               "every number is copied from those sections.")
     m = call("GET", "actuarial-memo", timeout=180)
     if m is None:
         st.error("Could not build the memorandum.")
@@ -265,9 +266,9 @@ def render_actuarial_memo(brief: Dict[str, Any], call: Call) -> None:
         st.info(m.get("reason", "No memorandum for this brief."))
         return
     if m["draft"]:
-        st.warning("DRAFT — approve the indication (Rate indication section) before filing.")
+        st.warning("DRAFT — approve the indication (Rate indication section) before the PMC reviews the product.")
     if m["tbd"]:
-        st.info(f"{len(m['tbd'])} item(s) only the filing actuary can supply are marked [TBD]: "
+        st.info(f"{len(m['tbd'])} item(s) only the insurer or Appointed Actuary can supply are marked [TBD]: "
                 + "; ".join(m["tbd"]) + ".")
     st.download_button("Download memorandum (.md)", m["markdown"], file_name=m["filename"], mime="text/markdown",
                        type="primary")

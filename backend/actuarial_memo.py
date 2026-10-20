@@ -1,27 +1,45 @@
 """
 Actuarial memorandum
 ====================
-A draft actuarial memorandum and exhibits for a rate filing of the new coverage, assembled from the computed
-work products: rate indication (backend.pricing), loss development (backend.reserving), rating plan
-(backend.rating_plan), business plan (backend.business_plan) and the actuary's benchmarks and approval
-(backend.actuarial). Deterministic: every number is copied from those results, nothing is generated.
+A draft actuarial memorandum and exhibits supporting the Appointed Actuary's technical note for the new coverage,
+filed under IRDAI's Use & File procedure. It is assembled from the computed work products: rate indication
+(backend.pricing), loss development (backend.reserving), rating plan (backend.rating_plan), business plan
+(backend.business_plan) and the actuary's benchmarks and approval (backend.actuarial). Deterministic: every number
+is copied from those results, nothing is generated.
 
-What only the filing actuary can supply (company, filing references, qualification statement, state-specific
-requirements) is left as [TBD], and the memo says it is a draft until the indication is approved.
+Under the IRDAI Master Circular on General Insurance Business (11 June 2024) the insurer's Product Management
+Committee (PMC) approves the product and the insurer obtains a UIN before selling it. Pricing must rest on
+"appropriate data and/or technical justification", with rates "not excessive or inadequate or unfairly
+discriminatory" (Chapter III, 1.2-1.4). The professional standard is the Institute of Actuaries of India's APS 21
+(Appointed Actuary and General Insurance, Health Insurance or Reinsurance Business, v2.00, 15 September 2023), with
+APS 34 (General Actuarial Practice) for all actuarial work.
+
+What only the insurer can supply (registration number, PMC approval, UIN, the Appointed Actuary's certificate) is
+left as [TBD], and the memo says it is a draft until the indication is approved.
 """
 from __future__ import annotations
 
 from datetime import date
 from typing import Any, Dict, List, Optional
 
-ASOPS = [("ASOP No. 12", "Risk Classification", "rating variables and relativities (Exhibit 5)"),
-         ("ASOP No. 13", "Trending Procedures in Property/Casualty Insurance", "frequency and severity trend (Exhibit 1)"),
-         ("ASOP No. 23", "Data Quality", "data sources and limitations (Section 3)"),
-         ("ASOP No. 25", "Credibility Procedures", "credibility and complement (Exhibit 3)"),
-         ("ASOP No. 29", "Expense Provisions for Prospective P/C Risk Transfer", "expense, ULAE and profit provisions (Exhibit 4)"),
-         ("ASOP No. 39", "Treatment of Catastrophe Losses in P/C Ratemaking", "CAT removal and provision (Exhibit 1)"),
-         ("ASOP No. 41", "Actuarial Communications", "this memorandum"),
-         ("ASOP No. 53", "Estimating Future Costs for Prospective P/C Risk Transfer", "the indication as a whole")]
+MASTER_CIRCULAR = "IRDAI Master Circular on General Insurance Business, 2024"
+EOM_LIMIT_PCT = 30.0   # IRDAI (Expenses of Management, including Commission, of Insurers) Regulations, 2024
+STANDARDS = [
+    ("IAI APS 21 §6.1", "Premium rates fair: neither excessive nor inadequate", "the indication as a whole (Sections 1-2)"),
+    ("IAI APS 21 §6.2", "Claims costs and handling expenses, expense provision, future inflation, legislative change",
+     "trend (Exhibit 1), expense and LAE provisions (Exhibit 4)"),
+    ("IAI APS 21 §6.3", "Own experience compared with industry or reinsurer experience; data quality, large losses",
+     "data (Section 3), CAT and large losses (Exhibit 1), credibility (Exhibit 3)"),
+    ("IAI APS 21 §7", "Capital requirements for a new product", "business plan and capital (Exhibit 6)"),
+    ("IAI APS 34", "General Actuarial Practice (data, assumptions, communication)", "this memorandum"),
+    (f"{MASTER_CIRCULAR}, Ch. III 1.2-1.4", "Sound actuarial basis; rates from data or technical justification, not "
+     "excessive, inadequate or unfairly discriminatory; allowance for catastrophes and large losses",
+     "Exhibits 1, 3 and 5"),
+    (f"{MASTER_CIRCULAR}, Ch. II C.1 and Ch. III 2-3", "PMC approval, Use & File documentation, UIN before sale",
+     "header and Section 7"),
+    ("IRDAI EoM Regulations, 2024", f"Expenses of management within {EOM_LIMIT_PCT:.0f}% of gross written premium",
+     "Exhibit 4"),
+]
 
 
 def _m(x: Optional[float], cents: bool = True) -> str:
@@ -32,6 +50,19 @@ def _m(x: Optional[float], cents: bool = True) -> str:
 
 def _p(x: Optional[float], n: int = 1) -> str:
     return "—" if x is None else f"{x:.{n}f}%"
+
+
+def eom_check(expense_ratio_pct: float, ulae_pct: float) -> str:
+    """The product's expense ratio against the company-wide expenses-of-management limit."""
+    over = expense_ratio_pct > EOM_LIMIT_PCT
+    out = (f"Expenses of management: the expense ratio of {_p(expense_ratio_pct)} is "
+           f"{'**above**' if over else 'within'} the {EOM_LIMIT_PCT:.0f}% of gross written premium that IRDAI's EoM "
+           f"Regulations, 2024 allow a general insurer across its whole book; in-house claims handling (ULAE "
+           f"{_p(ulae_pct)} of losses) also counts towards the limit. GST is charged on top of the premium and is not "
+           "an expense here.")
+    if over:
+        out += " Finance must show the excess is absorbed elsewhere in the book before the PMC approves."
+    return out
 
 
 def _table(headers: List[str], rows: List[List[Any]]) -> str:
@@ -62,10 +93,12 @@ def build(title: str, indication: Dict[str, Any], development: Dict[str, Any], p
 
     md = [f"# Actuarial Memorandum — {title}",
           f"**Status:** {'DRAFT — the indication is not approved' + (' (approval stale)' if status.get('stale') else '') if draft else 'Indication approved by ' + ap['name'] + ' on ' + ap['approved_at'][:10]}  ",
-          f"**Company:** {TBD('company name and NAIC number')}  ",
-          f"**Filing reference:** {TBD('SERFF tracking number')}  ",
-          f"**Proposed effective date:** {indication['effective_date']}  ",
-          f"**States:** {', '.join(launch_states) if launch_states else TBD('filing states')}  ",
+          f"**Insurer:** {TBD('insurer name and IRDAI registration number')}  ",
+          f"**Filing route:** Use & File ({MASTER_CIRCULAR})  ",
+          f"**PMC approval:** {TBD('Product Management Committee approval date')}  ",
+          f"**UIN:** {TBD('UIN allotted by IRDAI after PMC approval')}  ",
+          f"**Proposed launch date:** {indication['effective_date']}  ",
+          f"**Launch states:** {', '.join(launch_states) if launch_states else TBD('launch states')}  ",
           f"**Prepared:** {date.today().isoformat()} from Roundtable (synthetic demo data — illustrative figures)",
           "",
           "## 1. Purpose",
@@ -73,7 +106,9 @@ def build(title: str, indication: Dict[str, Any], development: Dict[str, Any], p
           f"methods and assumptions behind the indicated average premium of **{_m(indication['indicated_premium'])} "
           f"per {unit[:-1] if unit.endswith('s') else unit}**"
           + (f" and the selected rate of **{_m(selected)}**" if selected else "") + ", and the rating plan that "
-          "distributes it.",
+          "distributes it, and supports the Appointed Actuary's technical note for the PMC. Motor third-party "
+          "liability premium is set by the Central Government under the Motor Vehicles Act, 1988 and is not "
+          "priced here.",
           "",
           "## 2. Summary of the indication",
           _table(["Step", "Per exposure"], [[s["step"], _m(s["value"])] for s in indication["steps"]]),
@@ -97,12 +132,12 @@ def build(title: str, indication: Dict[str, Any], development: Dict[str, Any], p
             if indication["priced_claims"] == "newly_covered" else
             "All claims of the risk pattern are priced (no covered-claims set was available)."),
            "",
-           "Limitations (ASOP No. 23): the data is a synthetic demonstration extract; there is no payment "
+           "Limitations (APS 21 §6.3.1, data quality): the data is a synthetic demonstration extract; there is no payment "
            "transaction history, so development triangles are reconstructed from report and close dates; "
            "losses below a policy's deductible are unobserved.", ""]
     if indication["basis"] == "proxy":
         md += ["**Proxy experience:** the product has no claims of its own; the experience is the pooled claims of "
-               "related risk patterns. The filing actuary must confirm the perils are comparable.", ""]
+               "related risk patterns. The Appointed Actuary must confirm the perils are comparable.", ""]
 
     md += ["## Exhibit 1 — Experience, development and trend",
            _table(["AY", "Exposure", "Claims", "Loss cost", "Non-CAT capped share", "Development", "Trend",
@@ -144,7 +179,7 @@ def build(title: str, indication: Dict[str, Any], development: Dict[str, Any], p
     else:
         md.append("No development triangle could be built; a heuristic development factor was used.")
 
-    md += ["", "## Exhibit 3 — Credibility (ASOP No. 25)",
+    md += ["", "## Exhibit 3 — Credibility (APS 21 §6.3: own and industry experience)",
            f"Classical full-credibility standard of {cred['full_credibility_claims']:,} claims; {cred['claims']:,} "
            f"claims in the experience give Z = {cred['z']:.3f}."]
     bench = [b for b in state.get("benchmarks") or [] if b.get("include", True)]
@@ -156,21 +191,23 @@ def build(title: str, indication: Dict[str, Any], development: Dict[str, Any], p
                    + ("" if cred["applied"] else " (not applied by the actuary's selection)") + "."]
     else:
         md += ["", "No external benchmark was entered, so the experience is used at full weight. "
-               + TBD("credibility complement (bureau loss cost, competitor filed rate or reinsurer quote)")]
+               + TBD("credibility complement (IIB industry statistics, a competitor's published rate or a "
+                     "reinsurer quote)")]
 
     saved = state.get("assumptions") or {}
 
     def source(key: str, missing: str) -> str:
-        """The brief's own selection, else the cited company setting, else a [TBD] for the filing actuary."""
+        """The brief's own selection, else the cited company setting, else a [TBD] for the Appointed Actuary."""
         if key in saved:
             return "selected for this product by the actuary"
         return prov.get(key) or TBD(missing)
 
-    md += ["", "## Exhibit 4 — Expense, LAE and profit provisions (ASOP No. 29)",
+    md += ["", "## Exhibit 4 — Expense, LAE and profit provisions (APS 21 §6.2)",
            _table(["Provision", "Value", "Source"],
                   [["ALAE", _p(indication["alae_pct"]), "company claims data (paid expense / incurred)"],
                    ["ULAE", _p(a["ulae_pct"]), source("ulae_pct", "ULAE study")],
-                   ["Expense ratio (commission, taxes, general, other acquisition)", _p(a["expense_ratio_pct"]),
+                   ["Expense ratio (commission, levies, general, other acquisition; excl. GST)",
+                    _p(a["expense_ratio_pct"]),
                     source("expense_ratio_pct", "company expense exhibit by component")],
                    ["Profit & contingencies", _p(a["profit_pct"]),
                     source("profit_pct", "profit provision support (return on capital)")],
@@ -178,9 +215,9 @@ def build(title: str, indication: Dict[str, Any], development: Dict[str, Any], p
                     else "n/a", prov.get("unreported_load_pct") or "actuarial judgement"],
                    ["Adverse selection load", _p(a["adverse_selection_pct"]),
                     prov.get("adverse_selection_pct") or "actuarial judgement"]]),
-           ""]
+           "", eom_check(a["expense_ratio_pct"], a["ulae_pct"]), ""]
 
-    md.append("## Exhibit 5 — Rating plan (ASOP No. 12)")
+    md.append("## Exhibit 5 — Rating plan (not unfairly discriminatory, Master Circular Ch. III 1.4)")
     if plan.get("available"):
         md += [f"Base rate **{_m(plan['base_rate'])}** at base levels "
                + ", ".join(f"{k.replace('_', ' ')} = {v}" for k, v in plan["base_levels"].items())
@@ -256,9 +293,14 @@ def build(title: str, indication: Dict[str, Any], development: Dict[str, Any], p
                _table(["KPI", "Cadence", "Threshold", "Owner"],
                       [[p["kpi"], p["cadence"], p["threshold"], p["owner"]] for p in mon["plan"]]), ""]
 
-    md += ["## 6. Actuarial standards", _table(["Standard", "Title", "Where addressed"], [list(x) for x in ASOPS]), "",
-           "## 7. Qualification and reliance",
-           TBD("qualification statement of the filing actuary (Qualification Standards, ASOP No. 41 §3.1.4)"), "",
+    md += ["## 6. Standards and regulations",
+           _table(["Reference", "Requirement", "Where addressed"], [list(x) for x in STANDARDS]), "",
+           "## 7. Certification and approval",
+           "- " + TBD("Appointed Actuary's certificate that the premium rates are fair and sound (APS 21 §6.1), "
+                      "countersigned by the CEO"),
+           "- " + TBD("PMC sign-off by the Chief Underwriting Officer, the Appointed Actuary and the other members "
+                      "(quorum of three plus the Appointed Actuary)"),
+           "- " + TBD("Appointed Actuary's Certificate of Practice from the Institute of Actuaries of India"), "",
            "## 8. Notes and limitations", *[f"- {n}" for n in indication["notes"]]]
     return {"available": True, "markdown": "\n".join(md), "draft": draft, "tbd": tbd,
             "filename": f"actuarial_memo_{indication['effective_date']}.md"}

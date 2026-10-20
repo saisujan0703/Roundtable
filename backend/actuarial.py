@@ -5,9 +5,9 @@ What the Lead Actuary records on a brief, stored in briefs.actuarial_json:
 
 assumptions     the selected pricing assumptions (backend.pricing.DEFAULTS keys); the indication, rating plan,
                 business plan and memorandum are all computed with them
-benchmarks      external data for the credibility complement: bureau loss costs, competitors' filed rates,
-                reinsurer quotes. Entered by hand with their source, because the data behind them (ISO, SERFF,
-                treaty quotes) is licensed or outside this system
+benchmarks      external data for the credibility complement: industry loss costs (Insurance Information Bureau
+                of India), competitors' published rates, reinsurer quotes (GIC Re and others). Entered by hand with
+                their source, because the data behind them is licensed or outside this system
 business_plan   the business-plan inputs (backend.business_plan.DEFAULTS keys)
 approval        the actuary's approval of the indication: selected rate, name, note, and a fingerprint of the
                 inputs it was given against. If the indication changes (new data, other assumptions, a changed
@@ -62,7 +62,7 @@ def add_benchmark(state: Dict[str, Any], fields: Dict[str, Any], by: str) -> Dic
         raise ValueError(f"kind must be one of {tuple(pricing.BENCHMARK_TYPES)}")
     source = (fields.get("source") or "").strip()[:200]
     if not source:
-        raise ValueError("Name the source (e.g. 'ISO loss cost, PP comprehensive, CA, 2025 edition').")
+        raise ValueError("Name the source (e.g. 'IIB motor OD statistics, private car, MH, FY2024-25').")
     try:
         value = float(fields.get("value"))
     except (TypeError, ValueError):

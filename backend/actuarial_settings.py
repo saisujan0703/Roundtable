@@ -5,11 +5,20 @@ Company-level assumptions that replace the placeholder defaults in backend.prici
 each with the source the Lead Actuary cites (expense study, ULAE study, capital plan, ...). Stored once in the
 actuarial_settings table; every brief starts from them and can still override per product.
 
-Expense ratio = commission + premium tax + other acquisition + general expense (the components a filing exhibits).
-Profit & contingencies is DERIVED from the target return on equity (ASOP No. 30 style return-on-capital model):
-    after-tax return = (underwriting profit + investment yield x (surplus + loss reserves)) x (1 - tax)
+Expense ratio = commission + regulatory levies + other acquisition + general expense (the components the technical
+note exhibits). GST is charged to the customer on top of the premium, so it is not an expense here. India has no US
+style premium tax; the levies field is for any fee charged on premium (placeholder 0 until Finance sets it).
+The IRDAI (Expenses of Management, including Commission, of Insurers) Regulations, 2024 limit a general insurer's
+expenses of management to 30% of its gross written premium across its whole book; the check here conservatively
+counts every expense component against it.
+
+Profit & contingencies is DERIVED from the target return on equity (a return-on-capital model; APS 21 §7 asks the
+Appointed Actuary to assess the capital a new product needs):
+    after-tax return = (underwriting profit + investment yield x (capital + loss reserves)) x (1 - tax)
     => underwriting profit (% of premium) = ROE x S / (1 - tax) - yield x (S + R)
-with S = 1 / premium-to-surplus and R = loss reserves per unit of premium.
+with S = 1 / premium-to-capital and R = loss reserves per unit of premium. With Indian investment yields the
+derived underwriting profit can be negative: the investment income on capital and reserves earns the return.
+Defaults: tax 25.17% (Income Tax Act s.115BAA, 22% plus 10% surcharge and 4% cess), investment yield 7%.
 """
 from __future__ import annotations
 
@@ -21,15 +30,15 @@ from backend.database import get_connection
 
 FIELDS = {  # key: (label, default, low, high)
     "commission_pct": ("Commission %", 12.0, 0.0, 40.0),
-    "premium_tax_pct": ("Premium tax & fees %", 2.5, 0.0, 10.0),
+    "premium_tax_pct": ("Regulatory levies & fees % (excl. GST)", 0.0, 0.0, 10.0),
     "other_acquisition_pct": ("Other acquisition %", 4.5, 0.0, 30.0),
     "general_expense_pct": ("General expense %", 6.0, 0.0, 30.0),
     "ulae_pct": ("ULAE % of loss & ALAE", 5.0, 0.0, 20.0),
-    "target_roe_pct": ("Target after-tax return on equity %", 10.0, 0.0, 30.0),
-    "premium_to_surplus": ("Premium-to-surplus ratio", 2.0, 0.5, 6.0),
-    "loss_reserves_to_premium": ("Loss reserves per $ of premium", 0.6, 0.0, 5.0),
-    "investment_yield_pct": ("Investment yield %", 3.0, 0.0, 15.0),
-    "tax_rate_pct": ("Tax rate %", 21.0, 0.0, 50.0),
+    "target_roe_pct": ("Target after-tax return on equity %", 14.0, 0.0, 30.0),
+    "premium_to_surplus": ("Premium-to-capital ratio", 2.0, 0.5, 6.0),
+    "loss_reserves_to_premium": ("Loss reserves per ₹ of premium", 0.6, 0.0, 5.0),
+    "investment_yield_pct": ("Investment yield %", 7.0, 0.0, 15.0),
+    "tax_rate_pct": ("Tax rate %", 25.17, 0.0, 50.0),
     "severity_trend_pct": ("Default severity trend %/yr", 5.0, -10.0, 25.0),
     "unreported_load_pct": ("Default unreported-demand load %", 25.0, 0.0, 200.0),
     "adverse_selection_pct": ("Default adverse-selection load %", 10.0, -20.0, 100.0),

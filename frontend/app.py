@@ -1706,10 +1706,12 @@ elif st.session_state.current_view in ("claims", "actuarial"):
                     _render_category_split_view(cat_research, "Research Papers & Studies", "research")
 
                 with sub_competitors:
-                    # SERFF blocks automated access, so filed rates/forms are a manual lookup
+                    # Indian technical notes and filed rates are private under Use & File
                     st.caption(
-                        "Carrier web pages show marketed coverage only. For filed rates, rules and policy forms, "
-                        "search competitor filings by state in [SERFF Filing Access](https://filingaccess.serff.com/sfa/home/)."
+                        "Insurer web pages show marketed coverage only. Each insurer publishes its policy wordings, "
+                        "prospectuses and customer information sheets with their IRDAI UIN, and lists new products in "
+                        "its quarterly Form NL-27 disclosure; technical notes and filed rates are not public "
+                        "([IRDAI](https://irdai.gov.in))."
                     )
                     _render_category_split_view(cat_competitors, "Competitor Offerings & Products", "competitors")
 

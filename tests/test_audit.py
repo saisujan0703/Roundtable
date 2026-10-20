@@ -54,7 +54,7 @@ def _latest(client, headers, **params):
 
 @pytestmark_api
 def test_a_change_is_recorded_with_who_and_what(client, actuary_headers):
-    body = {"values": {"tax_rate_pct": 21.0}, "sources": {"tax_rate_pct": "US federal rate"}}
+    body = {"values": {"tax_rate_pct": 25.17}, "sources": {"tax_rate_pct": "Income Tax Act s.115BAA"}}
     assert client.put("/api/actuarial/settings", json=body, headers=actuary_headers).status_code == 200
     e = _latest(client, actuary_headers)[0]
     assert e["email"] == ACTUARY[0] and e["role"] == "Lead Actuary" and e["name"] == "Lead Actuary"
@@ -65,7 +65,7 @@ def test_a_change_is_recorded_with_who_and_what(client, actuary_headers):
 
 @pytestmark_api
 def test_refused_change_is_recorded_too(client, actuary_headers):
-    client.put("/api/actuarial/settings", json={"values": {"tax_rate_pct": 21.0}, "sources": {}}, headers=actuary_headers)
+    client.put("/api/actuarial/settings", json={"values": {"tax_rate_pct": 25.17}, "sources": {}}, headers=actuary_headers)
     e = _latest(client, actuary_headers)[0]
     assert e["status"] == 400 and e["action"] == "save actuarial settings"
 

@@ -223,8 +223,8 @@ def _render_benchmarks(bid: int, data: Dict[str, Any], unit1: str, call: Callabl
     cred = data["credibility"]
     with st.expander(f"📚 Credibility complement — external benchmarks ({len(benchmarks)})", expanded=False):
         st.caption(f"With Z = {cred['z']:.2f}, the experience gets {cred['z']:.0%} of the weight and the mean of the "
-                   "benchmarks below (trended to the average accident date) the rest. Enter bureau loss costs, competitors' "
-                   f"filed rates (SERFF) or reinsurer quotes, per {unit1}, with their source.")
+                   "benchmarks below (trended to the average accident date) the rest. Enter IIB industry loss costs, "
+                   f"competitors' published rates or reinsurer quotes (e.g. GIC Re), per {unit1}, with their source.")
         for b in benchmarks:
             c1, c2, c3 = st.columns([5, 1.2, 1])
             kind = "loss cost" if b["kind"] == "loss_cost" else f"premium @ {b['permissible_loss_ratio_pct']:.0f}% PLR"
@@ -243,7 +243,7 @@ def _render_benchmarks(bid: int, data: Dict[str, Any], unit1: str, call: Callabl
             kind = c1.selectbox("Type", list(types), format_func=types.get)
             value = c2.number_input(f"Value per {unit1} ($)", 0.0, 1e7, 0.0, 1.0)
             as_of = c3.date_input("Applies as of", value=date.today())
-            source = st.text_input("Source", placeholder="e.g. ISO loss cost, PP comprehensive, CA, 2025 edition")
+            source = st.text_input("Source", placeholder="e.g. IIB motor OD statistics, private car, MH, FY2024-25")
             c4, c5, c6 = st.columns(3)
             plr = c4.number_input("Permissible loss ratio % (premium only)", 20.0, 100.0, 65.0, 1.0)
             unit = c5.text_input("Exposure unit", placeholder=f"per {unit1}")
@@ -254,10 +254,10 @@ def _render_benchmarks(bid: int, data: Dict[str, Any], unit1: str, call: Callabl
                 if call("POST", "actuarial/benchmarks", json=body) is not None:
                     st.rerun()
 
-        st.markdown("**Import a bureau / vendor file (CSV)**")
+        st.markdown("**Import an industry / reinsurer file (CSV)**")
         st.caption("Columns: source, kind (loss_cost | premium), value, as_of — optional state, unit, url, "
                    "permissible_loss_ratio_pct, note. Rows for states outside the launch states are skipped.")
-        up = st.file_uploader("Bureau CSV", type=["csv"], key=f"bm_csv_{bid}", label_visibility="collapsed")
+        up = st.file_uploader("Industry CSV", type=["csv"], key=f"bm_csv_{bid}", label_visibility="collapsed")
         if up is not None and st.button("Import file", key=f"bm_csv_go_{bid}"):
             res = call("POST", "actuarial/benchmarks/import", files={"file": (up.name, up.getvalue(), "text/csv")},
                        timeout=60)
@@ -266,13 +266,15 @@ def _render_benchmarks(bid: int, data: Dict[str, Any], unit1: str, call: Callabl
                 for e in res["errors"]:
                     st.warning(e)
 
-        st.markdown("**Competitor filings to read**")
-        if st.button("Find filings (SERFF and web)", key=f"bm_leads_{bid}"):
+        st.markdown("**Competitor products to read**")
+        if st.button("Find competitor products (IRDAI UIN and web)", key=f"bm_leads_{bid}"):
             st.session_state[f"bm_leads_data_{bid}"] = call("GET", "filing-leads", timeout=60)
         leads = st.session_state.get(f"bm_leads_data_{bid}")
         if leads:
-            st.markdown("SERFF Filing Access: " + " · ".join(f"[{l['state']}]({l['url']})" for l in leads["serff"]))
-            st.caption(leads["web_status"] + " Leads only: read the filing, check its rating base and exposure unit, "
+            st.markdown(" · ".join(f"[{r['label']}]({r['url']})" for r in leads.get("registers", [])))
+            if leads.get("how_to"):
+                st.caption(leads["how_to"])
+            st.caption(leads["web_status"] + " Leads only: read the product, check its rating base and exposure unit, "
                                              "then enter the figure above.")
             for w in leads["web"]:
                 st.markdown(f"- [{_md(w['title'])}]({w['url']}) — {_md(w['snippet'][:200])}")

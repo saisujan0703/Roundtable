@@ -3,7 +3,7 @@ Roundtable rate indication
 ==========================
 A directional pure-premium indication for the new coverage, built from the claims experience stored on a
 brief (backend.analytics via brief.claims_analytics). Every number is computed here; the LLM never sees or
-writes them. It is a pre-filing indication for the actuary to select from, not a rate filing.
+writes them. It is an indication for the actuary to select from, not the Appointed Actuary's technical note.
 
 Steps
 1. Experience   the last N full accident years. With the covered-claims set (backend.coverage), only the claims
@@ -25,7 +25,7 @@ Steps
                 buyers of an optional cover are worse risks than the book. Both are actuarial judgement, shown
                 as such, with defaults the actuary is expected to replace
 7. Credibility  Z = sqrt(claims / 1,082); the complement is the trended mean of the external benchmarks the
-                actuary has entered (bureau loss costs, competitors' filed rates, reinsurer quotes)
+                actuary has entered (IIB industry loss costs, competitors' published rates, reinsurer quotes)
 8. Expenses     ALAE from the data, ULAE, then expense and profit & contingencies:
                 indicated premium = credibility-weighted loss cost x (1 + ALAE) x (1 + ULAE) / (1 - expense - profit)
 
@@ -67,7 +67,7 @@ LIMITS = {
     "cat_load_pct": (0.0, 200.0), "unreported_load_pct": (0.0, 200.0), "adverse_selection_pct": (-20.0, 100.0),
 }
 BOOLS = ("apply_development", "apply_complement", "price_whole_pattern")
-BENCHMARK_TYPES = {"loss_cost": "Loss cost (pure, per exposure)", "premium": "Premium / filed rate (per exposure)"}
+BENCHMARK_TYPES = {"loss_cost": "Loss cost (pure, per exposure)", "premium": "Premium / published rate (per exposure)"}
 
 
 def _clamp(name: str, value: float) -> float:
@@ -326,7 +326,7 @@ def rate_indication(analytics: Dict[str, Any], overrides: Optional[Dict[str, Any
     dev_label = ("reported counts, chain-ladder" if incremental and a["dev_method"] != "heuristic" else
                  {"chain_ladder": "chain-ladder", "bornhuetter_ferguson": "Bornhuetter-Ferguson",
                   "heuristic": "heuristic"}[a["dev_method"]])
-    notes = ["Directional indication on synthetic demo data — the actuary selects the final rate. Not a rate filing."]
+    notes = ["Directional indication on synthetic demo data — the actuary selects the final rate. Not the Appointed Actuary's technical note."]
     if incremental:
         notes.append("Prices only the claims the new coverage would newly pay (denied today for a coverage reason and not "
                      "excluded by the new wording). Their cost is estimated from paid claims with the same loss "
@@ -362,7 +362,8 @@ def rate_indication(analytics: Dict[str, Any], overrides: Optional[Dict[str, Any
                      "CAT losses in, which a few years cannot represent. Price this cover with a catastrophe model.")
     if central["complement"] is None:
         notes.append(f"Credibility Z = {ctx['z']:.2f} but no external benchmark is entered, so the experience is used at "
-                     "full weight. Add a bureau loss cost, competitor filed rate or reinsurer quote as the complement.")
+                     "full weight. Add an IIB industry loss cost, a competitor's published rate or a reinsurer quote "
+                     "as the complement.")
     elif not a["apply_complement"]:
         notes.append("The credibility complement is switched off: the experience is used at full weight.")
     if basis == "proxy":

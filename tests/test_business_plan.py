@@ -19,8 +19,8 @@ def test_one_year_by_hand():
     assert y["written_premium"] == 100_000 and y["loss_and_lae"] == 60_000 and y["expenses"] == 25_000
     assert y["underwriting_result"] == 15_000
     assert y["capital"] == 50_000                                  # premium / 2.0 premium-to-surplus
-    assert y["investment_income"] == 2_400                         # 3% x (50,000 + 60,000 x 1 yr / 2)
-    assert y["after_tax_result"] == round((15_000 + 2_400) * 0.79)
+    assert y["investment_income"] == 5_600                         # 7% x (50,000 + 60,000 x 1 yr / 2)
+    assert y["after_tax_result"] == round((15_000 + 5_600) * 0.7483)   # 25.17% tax
     assert y["combined_ratio_pct"] == 85.0
 
 

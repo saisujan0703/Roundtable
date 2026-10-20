@@ -1,7 +1,7 @@
 """
 Rating plan
 ===========
-Turns the indicated average premium (backend.pricing) into a rate structure a filing needs:
+Turns the indicated average premium (backend.pricing) into a rate structure the technical note needs:
 base rate x territory relativity x class relativities x deductible factor (x increased-limit factor).
 
 Relativities

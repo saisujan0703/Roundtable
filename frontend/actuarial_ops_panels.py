@@ -238,6 +238,12 @@ def render_company_settings(api: Call) -> None:
     c2.metric("Profit & contingencies (from ROE)", f"{d['profit_pct']:.2f}%")
     c3.metric("Last updated", (data.get("updated_at") or "never")[:10], data.get("updated_by") or "placeholders in use",
               delta_color="off")
+    limit = d.get("eom_limit_pct")
+    if limit is not None and d["expense_ratio_pct"] > limit:
+        st.warning(f"The expense ratio is above the {limit:.0f}% of gross written premium that IRDAI's Expenses of "
+                   "Management Regulations, 2024 allow across the whole book.")
+    st.caption("GST is charged on top of the premium and is not an expense here. With Indian investment yields the "
+               "profit provision can be negative: investment income on capital and reserves earns the return.")
     with st.form(key="company_settings_form"):
         new_v, new_s = {}, {}
         for k, f in fields.items():

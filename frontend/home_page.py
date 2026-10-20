@@ -294,10 +294,10 @@ FEATURES = [
      [("Loss trends", "i"), ("Directional range", "")], [("Earned exposure", ""), ("Severity", "")]),
     (ICON_SHIELD, "Underwriting Review", "Risk eligibility, guideline boundaries and customer segment exposure thresholds.",
      [("Segment exposure", ""), ("Eligible", "g")], [("Underwriting rules", "i")]),
-    (ICON_BRIEFCASE, "Competitor Intel", "Peer carrier coverages, endorsements and marketed product terms, with SERFF filings a click away.",
+    (ICON_BRIEFCASE, "Competitor Intel", "Peer carrier coverages, endorsements and marketed product terms, with IRDAI UINs and policy wordings a click away.",
      [("Carrier products", "i"), ("Benchmarked", "g")], [("Policy terms", "")]),
-    (ICON_SCALE, "Regulatory Compliance", "State insurance mandates, rate filing requirements and statutory guidance.",
-     [("State mandates", "i"), ("Filing reqs", "")], [("DOI compliance", "g")]),
+    (ICON_SCALE, "Regulatory Compliance", "IRDAI regulations, master circulars, Use & File product rules and statutory guidance.",
+     [("IRDAI circulars", "i"), ("Use & File", "")], [("IRDAI compliance", "g")]),
     (ICON_GLOBE, "Live Web Research", "Cited news, regulator data, actuarial research and carrier pages from trusted sources.",
      [("Live search", "i"), ("Cited", "g")], [("Trusted domains", "")]),
 ]

@@ -12,7 +12,8 @@ Per plan year t (0-based)
   loss & LAE   exposures x indicated loss & LAE per exposure x loss trend^t (frequency x severity trend)
   expenses     variable expense ratio x premium + fixed expenses; one-off launch cost in year 1
   reinsurance  quota share: cede the share of premium and losses, receive a ceding commission on ceded premium
-  capital      net written premium / premium-to-surplus ratio
+  capital      net written premium / premium-to-capital ratio (a proxy: the IRDAI solvency margin is set by the
+               Actuarial, Finance and Investment Functions of Insurers Regulations, 2024, control level 150%)
   investment   yield x (capital + loss reserves held, approx. net losses x payout years / 2)
   after tax    (underwriting result + investment income) x (1 - tax rate)
 """
@@ -29,9 +30,9 @@ DEFAULTS = {
     "quota_share_pct": 0.0,
     "ceding_commission_pct": 30.0,
     "premium_to_surplus": 2.0,
-    "investment_yield_pct": 3.0,
+    "investment_yield_pct": 7.0,      # Indian government bond yields
     "loss_payout_years": 1.0,
-    "tax_rate_pct": 21.0,
+    "tax_rate_pct": 25.17,            # Income Tax Act s.115BAA: 22% + 10% surcharge + 4% cess
     "rate": None,               # None = the approved selected rate, else the indication
     "annual_rate_change_pct": None,  # None = the selected loss trend (rates keep pace with losses)
 }
@@ -127,7 +128,9 @@ def build(indication: Dict[str, Any], eligible_exposure: float, rate: float, val
              f"Eligible exposure {eligible_exposure:,.0f} {indication['exposure_unit']}: the scope's latest full-year "
              "earned exposure, i.e. today's book that could buy the cover.",
              "Loss & LAE per exposure comes from the rate indication (including its behavioural and credibility "
-             "adjustments) and trends forward with the selected frequency and severity trends."]
+             "adjustments) and trends forward with the selected frequency and severity trends.",
+             "Capital is premium / premium-to-capital ratio, a proxy for the IRDAI solvency margin (control level "
+             "150%); the Appointed Actuary confirms the capital need under APS 21 §7."]
     if margin_per_pt <= 0:
         notes.append(f"Before fixed costs the cover loses money over the {p['years']} years (loss & LAE trend "
                      f"{100 * (trend - 1):+.1f}%/yr vs rate change {p['annual_rate_change_pct']:+.1f}%/yr): no take-up "

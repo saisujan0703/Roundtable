@@ -106,15 +106,15 @@ def test_expense_ratio_is_the_sum_of_components():
 
 
 def test_profit_from_target_roe_by_hand():
-    # S = 1/2 = 0.5, R = 0.6; 10% x 0.5 / 0.79 - 3% x 1.1 = 6.329% - 3.3% = 3.03%
-    assert actuarial_settings.profit_pct(_settings()) == pytest.approx(3.03, abs=0.01)
+    # S = 1/2 = 0.5, R = 0.6; 14% x 0.5 / 0.7483 - 7% x 1.1 = 9.354% - 7.7% = 1.65%
+    assert actuarial_settings.profit_pct(_settings()) == pytest.approx(1.65, abs=0.01)
     higher = actuarial_settings.profit_pct(_settings(target_roe_pct=15))
     assert higher > actuarial_settings.profit_pct(_settings())
 
 
 def test_pricing_defaults_only_for_what_is_set():
     assert actuarial_settings.pricing_defaults(_settings()) == {}
-    out = actuarial_settings.pricing_defaults(_settings(tax_rate_pct=21, ulae_pct=6))
+    out = actuarial_settings.pricing_defaults(_settings(tax_rate_pct=25.17, ulae_pct=6))
     assert set(out) == {"profit_pct", "ulae_pct"} and out["ulae_pct"] == 6
 
 
@@ -128,9 +128,9 @@ def test_save_rejects_out_of_range_and_unsourced(test_db):
     with pytest.raises(ValueError, match="between"):
         actuarial_settings.save({"tax_rate_pct": 80}, {"tax_rate_pct": "x"}, "tester")
     with pytest.raises(ValueError, match="Cite the source"):
-        actuarial_settings.save({"tax_rate_pct": 21}, {"tax_rate_pct": "  "}, "tester")
-    saved = actuarial_settings.save({"tax_rate_pct": 21, "unknown": 3}, {"tax_rate_pct": "Federal rate"}, "tester")
-    assert saved["values"] == {"tax_rate_pct": 21.0} and saved["updated_by"] == "tester"
+        actuarial_settings.save({"tax_rate_pct": 25.17}, {"tax_rate_pct": "  "}, "tester")
+    saved = actuarial_settings.save({"tax_rate_pct": 25.17, "unknown": 3}, {"tax_rate_pct": "s.115BAA"}, "tester")
+    assert saved["values"] == {"tax_rate_pct": 25.17} and saved["updated_by"] == "tester"
 
 
 # ---------------------------------------------------------------------------

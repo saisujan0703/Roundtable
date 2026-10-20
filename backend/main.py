@@ -1628,7 +1628,7 @@ def save_business_plan(brief_id: int, req: BusinessPlanRequest):
 
 @app.get("/api/briefs/{brief_id}/actuarial-memo")
 def get_actuarial_memo(brief_id: int):
-    """Draft actuarial memorandum and exhibits for the rate filing (backend.actuarial_memo)."""
+    """Draft actuarial memorandum and exhibits for the technical note (backend.actuarial_memo)."""
     with get_connection() as conn:
         ctx = _indication(conn, brief_id)
         comp = conn.execute("SELECT compliance_json FROM briefs WHERE id = ?", (brief_id,)).fetchone()["compliance_json"]
@@ -1735,7 +1735,8 @@ def get_actuarial_settings():
     return {**s, "fields": {k: {"label": v[0], "default": v[1], "min": v[2], "max": v[3]}
                             for k, v in actuarial_settings.FIELDS.items()},
             "derived": {"expense_ratio_pct": round(actuarial_settings.expense_ratio_pct(s), 2),
-                        "profit_pct": actuarial_settings.profit_pct(s)}}
+                        "profit_pct": actuarial_settings.profit_pct(s),
+                        "eom_limit_pct": actuarial_memo.EOM_LIMIT_PCT}}
 
 
 @app.put("/api/actuarial/settings")
@@ -1870,7 +1871,7 @@ def save_parametric(brief_id: int, req: ParametricRequest):
 
 
 # ---------------------------------------------------------------------------
-# External rate data: bureau CSV import and competitor filing leads
+# External rate data: industry CSV import and competitor product leads
 # ---------------------------------------------------------------------------
 def _launch_states(conn, brief_id: int) -> List[str]:
     comp = conn.execute("SELECT compliance_json FROM briefs WHERE id = ?", (brief_id,)).fetchone()["compliance_json"]
@@ -1880,7 +1881,7 @@ def _launch_states(conn, brief_id: int) -> List[str]:
 
 @app.post("/api/briefs/{brief_id}/actuarial/benchmarks/import")
 async def import_benchmarks(brief_id: int, request: Request, file: UploadFile = File(...)):
-    """Import a bureau / vendor loss-cost CSV as benchmarks (rows outside the launch states are skipped)."""
+    """Import an industry / reinsurer loss-cost CSV as benchmarks (rows outside the launch states are skipped)."""
     raw = await file.read()
     if len(raw) > 2_000_000:
         raise HTTPException(status_code=413, detail="File too large (2 MB max).")
@@ -1937,15 +1938,11 @@ def refresh_competitor_landscape(brief_id: int, req: Optional[LandscapeRequest] 
 
 @app.get("/api/briefs/{brief_id}/filing-leads")
 def get_filing_leads(brief_id: int):
-    """SERFF Filing Access links for the launch states and web results for comparable rate filings."""
+    """Where to read Indian competitors' products (IRDAI, IIB, GIC Re) and web results for comparable products."""
     with get_connection() as conn:
         row = conn.execute("SELECT title, brief_json FROM briefs WHERE id = ?", (brief_id,)).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail=f"Brief #{brief_id} not found")
-        states = _launch_states(conn, brief_id)
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Brief #{brief_id} not found")
     brief = json.loads(row["brief_json"]) if row["brief_json"] else {}
     scope = (brief.get("claims_analytics") or {}).get("scope") or {}
-    if not states:  # no launch states chosen yet: the product's ten largest states by exposure
-        frames = launch_operations._frames(launch_operations.resolve_basis(brief))
-        states = [r["state"] for r in launch_operations.state_footprint(frames[0], frames[2])[:10]] if frames else []
-    return {"brief_id": brief_id, **filing_research.filing_leads(row["title"], scope.get("description", ""), states)}
+    return {"brief_id": brief_id, **filing_research.filing_leads(row["title"], scope.get("description", ""))}

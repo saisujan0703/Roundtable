@@ -7,8 +7,8 @@ from conftest import ACTUARY, BRIEF_ID, CLAIMS
 
 pytestmark = pytest.mark.api
 
-SOURCED = {"values": {"target_roe_pct": 12.0, "tax_rate_pct": 21.0},
-           "sources": {"target_roe_pct": "2026 capital plan", "tax_rate_pct": "US federal rate"}}
+SOURCED = {"values": {"target_roe_pct": 12.0, "tax_rate_pct": 25.17},
+           "sources": {"target_roe_pct": "2026 capital plan", "tax_rate_pct": "Income Tax Act s.115BAA"}}
 
 
 # ---------------------------------------------------------------------------
@@ -79,8 +79,9 @@ def test_company_settings_save_and_derive_profit(client, actuary_headers):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["values"] == SOURCED["values"] and body["updated_by"] == "Lead Actuary"
-    # 12% x 0.5 / 0.79 - 3% x (0.5 + 0.6)
-    assert body["derived"]["profit_pct"] == pytest.approx(12 * 0.5 / 0.79 - 3 * 1.1, abs=0.01)
+    # 12% x 0.5 / 0.7483 - 7% x (0.5 + 0.6)
+    assert body["derived"]["profit_pct"] == pytest.approx(12 * 0.5 / 0.7483 - 7 * 1.1, abs=0.01)
+    assert body["derived"]["eom_limit_pct"] == 30.0
 
 
 # ---------------------------------------------------------------------------
