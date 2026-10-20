@@ -31,10 +31,11 @@ import pandas as pd
 from backend import risk_patterns
 from backend.database import DB_PATH, get_connection
 
-LARGE_LOSS_THRESHOLD = 100_000
+LARGE_LOSS_THRESHOLD = 1_000_000   # Rs 10 lakh
 MIN_CREDIBLE_CLAIMS = 30          # per AY / per state before a rate is called credible
 GAP_DENIAL_REASONS = {            # denials that signal demand for coverage the policy does not give
     "mechanical_breakdown_excluded", "wear_tear_deterioration", "flood_excluded", "excluded_peril",
+    "engine_damage_excluded",
 }
 
 

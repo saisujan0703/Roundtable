@@ -121,9 +121,10 @@ DENIAL_REASON_NAMES = {
     "coverage_not_purchased": "Coverage not purchased on policy",
     "late_notice": "Late notice / prejudice",
     "fraud_misrepresentation": "Fraud / material misrepresentation",
-    "wc_2B_preexisting_condition": "WC 2B — pre-existing condition",
-    "wc_1A_coming_and_going": "WC 1A — coming and going",
-    "wc_2D_no_medical_evidence": "WC 2D — no medical evidence of injury",
+    "engine_damage_excluded": "Consequential engine damage from water ingress (no engine-protect add-on)",
+    "ec_preexisting_condition": "EC — pre-existing condition, not caused by employment",
+    "ec_not_in_course_of_employment": "EC — injury not arising out of and in the course of employment",
+    "ec_no_medical_evidence": "EC — no medical evidence of injury",
 }
 
 

@@ -37,6 +37,7 @@ DENIAL_NAMES = {
     "mechanical_breakdown_excluded": "mechanical breakdown exclusion",
     "wear_tear_deterioration": "wear & tear / gradual deterioration exclusion",
     "flood_excluded": "flood / surface water exclusion",
+    "engine_damage_excluded": "engine damage from water ingress (engine-protect add-on not bought)",
     "excluded_peril": "excluded peril",
     "coverage_not_purchased": "coverage not purchased",
     "late_notice": "late notice",
@@ -245,7 +246,7 @@ def _regulatory_items(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
     no_rule = sum(compliance.rule_for(s["state"], products)["placeholder"] for s in states)
     top = ", ".join(f"{s['state']} {s['exposure_share_pct']}%" for s in states[:3])
     thr = {t["threshold"]: t for t in ll.get("thresholds") or []}
-    t100, t250 = thr.get(100_000), thr.get(250_000)
+    t100, t250 = thr.get(1_000_000), thr.get(2_500_000)
     return [
         _item("state_compliance", "regulatory", "Confirm state claim-handling rules for every launch state",
               (f"Exposure spans {len(states)} states (largest: {top}); {no_rule} have no state rule loaded yet. In the "

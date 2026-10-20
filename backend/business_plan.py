@@ -24,8 +24,8 @@ DEFAULTS = {
     "take_up_pct": 15.0,
     "growth_pct": 5.0,
     "years": 3,
-    "launch_cost": 250_000.0,
-    "fixed_expense_per_year": 50_000.0,
+    "launch_cost": 5_000_000.0,             # Rs 50 lakh
+    "fixed_expense_per_year": 1_000_000.0,  # Rs 10 lakh
     "quota_share_pct": 0.0,
     "ceding_commission_pct": 30.0,
     "premium_to_surplus": 2.0,

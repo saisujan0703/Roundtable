@@ -53,7 +53,7 @@ DEFAULTS = {
     "apply_development": True,
     "dev_method": "chain_ladder",
     "tail_factor": 1.0,
-    "large_loss_cap": 100_000.0,
+    "large_loss_cap": 1_000_000.0,   # Rs 10 lakh
     "cat_load_pct": None,          # None = the pattern's long-run CAT-to-non-CAT ratio
     "unreported_load_pct": 25.0,   # judgement: claims never filed because the cover was known to be excluded
     "adverse_selection_pct": 10.0,  # judgement: optional-cover buyers vs the whole book
@@ -63,7 +63,7 @@ DEFAULTS = {
 LIMITS = {
     "experience_years": (1, 10), "months_to_effective": (0, 36), "frequency_trend_pct": (-30.0, 50.0),
     "severity_trend_pct": (-10.0, 25.0), "ulae_pct": (0.0, 20.0), "expense_ratio_pct": (0.0, 60.0),
-    "profit_pct": (-10.0, 20.0), "tail_factor": (1.0, 1.5), "large_loss_cap": (10_000.0, 5_000_000.0),
+    "profit_pct": (-10.0, 20.0), "tail_factor": (1.0, 1.5), "large_loss_cap": (100_000.0, 50_000_000.0),
     "cat_load_pct": (0.0, 200.0), "unreported_load_pct": (0.0, 200.0), "adverse_selection_pct": (-20.0, 100.0),
 }
 BOOLS = ("apply_development", "apply_complement", "price_whole_pattern")

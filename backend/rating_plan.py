@@ -36,7 +36,7 @@ from backend.database import get_connection
 FULL_CREDIBILITY_CLAIMS = 1082
 VEHICLE_UNITS = {"PersonalAuto", "BusinessAuto"}
 AGE_BANDS = [(-5, 2, "0-2 yrs"), (3, 5, "3-5 yrs"), (6, 9, "6-9 yrs"), (10, 200, "10+ yrs")]
-LIMITS = [5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000, 1_000_000]
+LIMITS = [50_000, 100_000, 250_000, 500_000, 1_000_000, 2_500_000, 5_000_000, 10_000_000]   # INR
 MIN_STATE_EXPOSURE_SHARE = 0.01   # smaller states are rated as "Other"
 
 

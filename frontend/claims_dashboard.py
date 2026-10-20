@@ -28,9 +28,10 @@ DENIAL_NAMES = {
     "coverage_not_purchased": "Coverage not purchased",
     "late_notice": "Late notice",
     "fraud_misrepresentation": "Fraud / misrepresentation",
-    "wc_2B_preexisting_condition": "WC 2B pre-existing condition",
-    "wc_1A_coming_and_going": "WC 1A coming and going",
-    "wc_2D_no_medical_evidence": "WC 2D no medical evidence",
+    "engine_damage_excluded": "Engine damage (no engine-protect add-on)",
+    "ec_preexisting_condition": "EC pre-existing condition",
+    "ec_not_in_course_of_employment": "EC not in course of employment",
+    "ec_no_medical_evidence": "EC no medical evidence",
 }
 CAUSE_NAMES = {
     "vehcollision": "Collision with vehicle", "rearend": "Rear-end collision", "fixedobjcoll": "Fixed object",

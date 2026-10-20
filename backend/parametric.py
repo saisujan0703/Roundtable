@@ -36,7 +36,7 @@ from backend import analytics
 FULL_CREDIBILITY_EVENTS = 100
 RISK_MULTIPLE = 0.25
 MAX_RISK_LOAD_PCT = 50.0
-DEFAULTS = {"payout": 2500.0}   # trigger: median observed event index; material loss: a quarter of it
+DEFAULTS = {"payout": 25_000.0}   # trigger: median observed event index; material loss: a quarter of it
 
 
 def events(key: str) -> Dict[str, Any]:

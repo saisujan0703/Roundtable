@@ -23,7 +23,7 @@ import pandas as pd
 
 from backend import analytics
 
-LARGE_LOSS_THRESHOLDS = (50_000, 100_000, 250_000, 500_000, 1_000_000)
+LARGE_LOSS_THRESHOLDS = (500_000, 1_000_000, 2_500_000, 5_000_000, 10_000_000)   # Rs 5 lakh to Rs 1 crore
 MIN_STATE_CLAIMS = 10  # per state before a litigation rate is shown
 
 # NAIC Annual Statement lines (Statutory Page 14 / U&I exhibit) by product and exposure type.

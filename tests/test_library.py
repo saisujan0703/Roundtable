@@ -40,7 +40,7 @@ def test_slug():
 # ---------------------------------------------------------------------------
 # Risk patterns: through the API and analytics
 # ---------------------------------------------------------------------------
-BATTERY = {"label": "Auto battery (keyword)", "keywords": ["battery"], "products": ["PersonalAuto", "BusinessAuto"],
+BATTERY = {"label": "Auto battery (keyword)", "keywords": ["high-voltage battery"], "products": ["PersonalAuto", "BusinessAuto"],
            "description": "test"}
 
 
@@ -54,7 +54,7 @@ def battery_pattern(client, actuary_headers):
 
 @pytest.mark.api
 def test_preview_shows_what_keywords_catch(client, claims_headers):
-    r = client.post("/api/risk-patterns/preview", json={"keywords": ["battery"]}, headers=claims_headers)
+    r = client.post("/api/risk-patterns/preview", json={"keywords": ["high-voltage battery"]}, headers=claims_headers)
     assert r.status_code == 200, r.text
     p = r.json()
     assert p["claims"] > 0 and p["samples"] and all("battery" in (s["description"] or "").lower() for s in p["samples"])
@@ -93,9 +93,9 @@ def test_title_finds_the_custom_pattern(battery_pattern):
 @pytest.mark.api
 def test_edit_and_refused_delete_while_in_use(client, actuary_headers, battery_pattern, test_db):
     key = battery_pattern["key"]
-    r = client.put(f"/api/risk-patterns/{key}", json={**BATTERY, "keywords": ["battery", "charging"]},
+    r = client.put(f"/api/risk-patterns/{key}", json={**BATTERY, "keywords": ["high-voltage battery", "charging"]},
                    headers=actuary_headers)
-    assert r.status_code == 200 and r.json()["keywords"] == ["battery", "charging"]
+    assert r.status_code == 200 and r.json()["keywords"] == ["high-voltage battery", "charging"]
     from backend.database import get_connection
     with get_connection() as conn:
         bid = conn.execute("INSERT INTO briefs (title, tag_value, claims_finding_text, claims_status, created_at, brief_json) "

@@ -1,9 +1,14 @@
 """
-Synthetic Insurance Data Generator
-===================================
-Generates Guidewire-shaped PolicyCenter and ClaimCenter data and loads it
-into roundtable.db. The data is built the way a carrier's book actually
-behaves, so that claims-team metrics computed from it are meaningful:
+Synthetic Insurance Data Generator (India)
+==========================================
+Generates Guidewire-shaped PolicyCenter and ClaimCenter data for an Indian
+general insurer and loads it into roundtable.db. Amounts are in rupees (INR). The data is built the way a carrier's book actually
+behaves, so that claims-team metrics computed from it are meaningful.
+
+Product codes stay Guidewire's (PersonalAuto = private car, BusinessAuto = commercial vehicle,
+HOPHomeowners = home, CommercialProperty = fire & property / SME, WorkersComp = employees'
+compensation). Costs are modelled in a base unit and converted to INR on output (INR_PER_UNIT),
+so premiums and losses stay in proportion; vehicle prices are entered in INR.
 
   policies        One row per policy *period* (term). Policies renew with a
                   retention rate, so the book grows over time. Auto terms
@@ -21,16 +26,20 @@ Claims are generated from exposure with Poisson frequencies per line and
 loss cause, so claim counts follow the book and the trends below are
 embedded in the rates rather than painted onto random rows:
 
-  - EV share of the auto book grows every year, and EV claims carry a
-    battery_fault tag when the high-voltage pack is damaged (collision,
-    road debris, thermal event, flood) or fails on its own (denied as
-    mechanical breakdown -> a coverage-gap signal).
-  - Homeowners water damage frequency rises year over year, plus a winter
-    freeze CAT in TX and a hurricane CAT in FL.
-  - Workers' comp strain frequency rises year over year.
-  - Vehicle theft is concentrated in IL and on 2015-2021 Kia/Hyundai ICE
-    models, fading after the 2023 anti-theft software fix.
-  - Rollovers are concentrated in TX; premises falls in commercial lines.
+  - EV share of the car book grows every year (Tata, MG, Mahindra, BYD ...), and
+    EV claims carry a battery_fault tag when the high-voltage pack is damaged
+    (collision, road debris, thermal event, flood) or fails on its own (denied
+    as mechanical breakdown -> a coverage-gap signal).
+  - Monsoon flooding: cars driven through waterlogged roads suffer engine
+    damage (hydrostatic lock), refused without the engine-protect add-on ->
+    a coverage-gap signal; flood CATs in Chennai, Kerala and Mumbai.
+  - Home water damage (monsoon seepage) rises year over year; cyclone CATs
+    in Gujarat and Odisha.
+  - Employees' compensation strain frequency rises year over year.
+  - Car theft is concentrated in Delhi NCR and on 2015-2021 Maruti Suzuki /
+    Hyundai petrol cars, fading as GPS trackers and immobilisers spread.
+  - Hill-road accidents in Uttarakhand, Himachal and J&K; stray-cattle
+    collisions in Uttar Pradesh, Rajasthan, Haryana and Punjab.
 
 Typelist codes follow 04_CC_TYPELIST_CATALOG.md (LossCause, ExposureType,
 CoverageType, ClaimSegment, ClaimClosedOutcomeType, FaultRating,
@@ -63,19 +72,17 @@ AS_OF = pd.Timestamp("2026-09-30")       # valuation date: nothing after this ex
 BOOK_START = pd.Timestamp("2022-01-01")  # first new-business effective date
 N_NEW_BUSINESS = 60_000                  # new-business policies written 2022 -> AS_OF
 SEED = 20260930
+INR_PER_UNIT = 10   # base cost unit -> rupees, applied to every amount on output
 
 # ---------------------------------------------------------------------------
 # Book of business
 # ---------------------------------------------------------------------------
-# Population-weighted state mix (top states explicit, remainder spread)
+# State / union territory mix, weighted towards the large general-insurance markets
 STATE_WEIGHTS = {
-    "CA": 11.5, "TX": 9.0, "FL": 6.8, "NY": 5.8, "PA": 3.9, "IL": 3.8, "OH": 3.5,
-    "GA": 3.3, "NC": 3.2, "MI": 3.0, "NJ": 2.8, "VA": 2.6, "WA": 2.3, "AZ": 2.2,
-    "MA": 2.1, "TN": 2.1, "IN": 2.0, "MO": 1.8, "MD": 1.8, "WI": 1.8, "CO": 1.8,
-    "MN": 1.7, "SC": 1.6, "AL": 1.5, "LA": 1.4, "KY": 1.4, "OR": 1.3, "OK": 1.2,
-    "CT": 1.1, "UT": 1.0, "IA": 1.0, "NV": 1.0, "AR": 0.9, "MS": 0.9, "KS": 0.9,
-    "NM": 0.6, "NE": 0.6, "ID": 0.6, "WV": 0.5, "HI": 0.4, "NH": 0.4, "ME": 0.4,
-    "MT": 0.3, "RI": 0.3, "DE": 0.3, "SD": 0.3, "ND": 0.2, "AK": 0.2, "VT": 0.2, "WY": 0.2,
+    "MH": 14.0, "TN": 8.5, "KA": 8.0, "GJ": 7.5, "UP": 7.5, "DL": 6.5, "TG": 5.0, "KL": 5.0,
+    "RJ": 4.5, "WB": 4.5, "AP": 4.0, "HR": 4.0, "MP": 3.5, "PB": 3.0, "BR": 2.0, "OR": 2.0,
+    "AS": 1.2, "JH": 1.2, "CG": 1.2, "UK": 0.9, "HP": 0.6, "JK": 0.6, "GA": 0.6, "CH": 0.4,
+    "TR": 0.2, "PY": 0.2, "ML": 0.1, "SK": 0.1,
 }
 STATES = np.array(list(STATE_WEIGHTS.keys()), dtype=object)
 STATE_P = np.array(list(STATE_WEIGHTS.values())) / sum(STATE_WEIGHTS.values())
@@ -87,73 +94,85 @@ PRODUCT_MIX = {
     "CommercialProperty": 0.11,
     "WorkersComp": 0.08,
 }
-TERM_MONTHS = {"PersonalAuto": 6, "BusinessAuto": 12, "HOPHomeowners": 12,
+TERM_MONTHS = {"PersonalAuto": 12, "BusinessAuto": 12, "HOPHomeowners": 12,
                "CommercialProperty": 12, "WorkersComp": 12}
 RETENTION = {"PersonalAuto": 0.87, "BusinessAuto": 0.83, "HOPHomeowners": 0.88,
              "CommercialProperty": 0.84, "WorkersComp": 0.85}
 CANCEL_RATE = 0.04            # share of terms cancelled mid-term
-RATE_CHANGE_PER_YEAR = 0.07   # filed rate increases, applied at renewal
+RATE_CHANGE_PER_YEAR = 0.06   # own-damage rate increases, applied at renewal
 LOSS_TYPE = {"PersonalAuto": "AUTO", "BusinessAuto": "AUTO", "HOPHomeowners": "PR",
              "CommercialProperty": "PR", "WorkersComp": "WC"}
 AUTO_LINES = ("PersonalAuto", "BusinessAuto")
 
-# (make, model, new price) by powertrain
+# (make, model, ex-showroom price in INR) by powertrain
 PA_VEHICLES = {
-    "ICE": [("Toyota", "Camry", 29000), ("Toyota", "RAV4", 32000), ("Honda", "Civic", 26000),
-            ("Honda", "CR-V", 32000), ("Ford", "F-150", 48000), ("Ford", "Explorer", 42000),
-            ("Chevrolet", "Silverado", 45000), ("Chevrolet", "Equinox", 30000), ("Nissan", "Rogue", 30000),
-            ("Jeep", "Grand Cherokee", 45000), ("Jeep", "Wrangler", 40000), ("BMW", "X5", 65000),
-            ("Hyundai", "Elantra", 23000), ("Hyundai", "Tucson", 29000), ("Kia", "Sportage", 29000),
-            ("Kia", "Optima", 25000), ("Subaru", "Outback", 32000)],
-    "Hybrid": [("Toyota", "Prius", 30000), ("Toyota", "RAV4 Hybrid", 35000),
-               ("Honda", "Accord Hybrid", 34000), ("Ford", "Maverick Hybrid", 26000)],
-    "EV": [("Tesla", "Model Y", 47000), ("Tesla", "Model 3", 42000), ("Ford", "Mustang Mach-E", 48000),
-           ("Chevrolet", "Bolt EV", 28000), ("Hyundai", "Ioniq 5", 45000), ("Kia", "EV6", 46000),
-           ("Nissan", "Leaf", 30000), ("BMW", "i4", 55000), ("Rivian", "R1S", 78000)],
+    "ICE": [("Maruti Suzuki", "Swift", 700_000), ("Maruti Suzuki", "Baleno", 750_000),
+            ("Maruti Suzuki", "Brezza", 1_000_000), ("Maruti Suzuki", "Dzire", 750_000),
+            ("Hyundai", "Creta", 1_300_000), ("Hyundai", "i20", 800_000), ("Hyundai", "Venue", 1_000_000),
+            ("Tata", "Nexon", 1_000_000), ("Tata", "Punch", 700_000), ("Mahindra", "Scorpio-N", 1_700_000),
+            ("Mahindra", "XUV700", 1_900_000), ("Kia", "Seltos", 1_400_000), ("Toyota", "Innova Crysta", 2_200_000),
+            ("Honda", "City", 1_300_000), ("Toyota", "Fortuner", 3_800_000), ("Kia", "Sonet", 1_000_000),
+            ("Renault", "Kwid", 500_000)],
+    "Hybrid": [("Toyota", "Urban Cruiser Hyryder", 1_700_000), ("Maruti Suzuki", "Grand Vitara", 1_700_000),
+               ("Honda", "City e:HEV", 2_000_000), ("Toyota", "Innova Hycross", 2_600_000)],
+    "EV": [("Tata", "Nexon EV", 1_500_000), ("Tata", "Punch EV", 1_200_000), ("Tata", "Tiago EV", 1_000_000),
+           ("MG", "ZS EV", 2_200_000), ("MG", "Comet EV", 800_000), ("Mahindra", "XUV400", 1_700_000),
+           ("BYD", "Atto 3", 2_500_000), ("Hyundai", "Creta Electric", 2_000_000), ("Hyundai", "Ioniq 5", 4_600_000)],
 }
 PA_VEHICLE_P = {
-    "ICE": [0.09, 0.09, 0.07, 0.08, 0.09, 0.06, 0.07, 0.06, 0.06, 0.05, 0.04, 0.03, 0.04, 0.04, 0.04, 0.03, 0.06],
-    "Hybrid": [0.30, 0.35, 0.20, 0.15],
-    "EV": [0.30, 0.22, 0.10, 0.10, 0.08, 0.06, 0.06, 0.04, 0.04],
+    "ICE": [0.12, 0.09, 0.07, 0.07, 0.08, 0.06, 0.05, 0.07, 0.06, 0.04, 0.04, 0.05, 0.03, 0.05, 0.02, 0.05, 0.05],
+    "Hybrid": [0.35, 0.30, 0.15, 0.20],
+    "EV": [0.30, 0.20, 0.16, 0.10, 0.07, 0.07, 0.04, 0.04, 0.02],
 }
 BA_VEHICLES = {
-    "ICE": [("Ford", "Transit", 48000), ("Ford", "F-250", 55000), ("Chevrolet", "Express", 42000),
-            ("Ram", "ProMaster", 44000), ("Chevrolet", "Silverado", 45000)],
-    "Hybrid": [("Ford", "F-150 PowerBoost", 55000)],
-    "EV": [("Ford", "E-Transit", 52000), ("Rivian", "EDV", 83000), ("Tesla", "Model Y", 47000)],
+    "ICE": [("Tata", "Ace Gold", 550_000), ("Mahindra", "Bolero Pik-Up", 950_000),
+            ("Ashok Leyland", "Dost", 800_000), ("Tata", "Intra V30", 850_000), ("Eicher", "Pro 2049", 1_500_000)],
+    "Hybrid": [("Toyota", "Innova Hycross", 2_600_000)],
+    "EV": [("Tata", "Ace EV", 1_100_000), ("Mahindra", "Treo Zor", 400_000), ("Euler", "HiLoad EV", 400_000)],
 }
-BA_VEHICLE_P = {"ICE": [0.30, 0.25, 0.15, 0.15, 0.15], "Hybrid": [1.0], "EV": [0.55, 0.25, 0.20]}
+BA_VEHICLE_P = {"ICE": [0.30, 0.25, 0.15, 0.15, 0.15], "Hybrid": [1.0], "EV": [0.45, 0.30, 0.25]}
+# Vehicle prices above are in INR; the cost model works in base units
+for _table in (PA_VEHICLES, BA_VEHICLES):
+    for _pt in _table:
+        _table[_pt] = [(mk, md, price / INR_PER_UNIT) for mk, md, price in _table[_pt]]
 
 # Share of new-business vehicles by powertrain, by year written
-EV_SHARE = {"PersonalAuto": {2022: 0.06, 2023: 0.09, 2024: 0.12, 2025: 0.15, 2026: 0.18},
-            "BusinessAuto": {2022: 0.02, 2023: 0.03, 2024: 0.05, 2025: 0.07, 2026: 0.09}}
-HYBRID_SHARE = {"PersonalAuto": 0.07, "BusinessAuto": 0.03}
+EV_SHARE = {"PersonalAuto": {2022: 0.02, 2023: 0.04, 2024: 0.06, 2025: 0.08, 2026: 0.10},
+            "BusinessAuto": {2022: 0.03, 2023: 0.05, 2024: 0.08, 2025: 0.11, 2026: 0.14}}
+HYBRID_SHARE = {"PersonalAuto": 0.04, "BusinessAuto": 0.01}
 
-# Replacement cost of the high-voltage battery pack by model (USD, parts + labour)
-EV_PACK_COST = {"Model Y": 16500, "Model 3": 15500, "Mustang Mach-E": 22000, "Bolt EV": 16000,
-                "Ioniq 5": 25000, "EV6": 25000, "Leaf": 9500, "i4": 22000, "R1S": 30000,
-                "E-Transit": 24000, "EDV": 32000}
+# Replacement cost of the high-voltage battery pack by model (INR, parts + labour)
+EV_PACK_COST = {m: c / INR_PER_UNIT for m, c in {
+    "Nexon EV": 650_000, "Punch EV": 500_000, "Tiago EV": 400_000, "ZS EV": 900_000, "Comet EV": 300_000,
+    "XUV400": 700_000, "Atto 3": 1_100_000, "Creta Electric": 800_000, "Ioniq 5": 1_800_000,
+    "Ace EV": 450_000, "Treo Zor": 150_000, "HiLoad EV": 150_000}.items()}
+EV_PACK_DEFAULT = 600_000 / INR_PER_UNIT
 
 # ---------------------------------------------------------------------------
 # Loss causes: frequency per exposure-unit-year by line
 #   unit = vehicle (auto), dwelling (HO), location (CP), employee (WC)
 # ---------------------------------------------------------------------------
 # year_trend multiplies frequency by accident year; state_mult by policy state.
+MONSOON_STATES = {"MH": 2.2, "AS": 2.5, "BR": 2.0, "KL": 2.0, "TN": 1.6, "WB": 1.6, "OR": 1.5, "GJ": 1.3}
+CYCLONE_STATES = {"OR": 2.6, "AP": 2.2, "TN": 1.9, "WB": 1.9, "GJ": 1.7, "PY": 1.8}
+HILL_STATES = {"UK": 2.4, "HP": 2.6, "JK": 2.2, "SK": 2.0, "ML": 1.6}
+THEFT_STATES = {"DL": 3.0, "HR": 1.8, "UP": 1.7, "MH": 1.2, "RJ": 1.2}
+STRAY_CATTLE = {"UP": 2.2, "RJ": 2.0, "HR": 1.7, "PB": 1.6, "MP": 1.5, "BR": 1.5}
 CAUSES = {
     "PersonalAuto": [
         {"cause": "vehcollision",   "freq": 0.040},
         {"cause": "rearend",        "freq": 0.030},
         {"cause": "fixedobjcoll",   "freq": 0.012},
-        {"cause": "animalcollision", "freq": 0.007},
-        {"cause": "otherobjcoll",   "freq": 0.004},   # road debris
-        {"cause": "rollover",       "freq": 0.0025, "state_mult": {"TX": 2.1, "OK": 1.6, "WY": 1.8}},
-        {"cause": "theftentire",    "freq": 0.0030, "state_mult": {"IL": 2.2, "CA": 1.3, "MO": 1.4}},
-        {"cause": "theftparts",     "freq": 0.0040, "exclude_powertrain": ["EV"]},   # catalytic converters
+        {"cause": "animalcollision", "freq": 0.007, "state_mult": STRAY_CATTLE},
+        {"cause": "otherobjcoll",   "freq": 0.004},   # road debris, potholes
+        {"cause": "rollover",       "freq": 0.0025, "state_mult": HILL_STATES},
+        {"cause": "theftentire",    "freq": 0.0030, "state_mult": THEFT_STATES},
+        {"cause": "theftparts",     "freq": 0.0040, "exclude_powertrain": ["EV"]},   # batteries, wheels, mirrors
         {"cause": "glassbreakage",  "freq": 0.028},
-        {"cause": "hail",           "freq": 0.004, "state_mult": {"TX": 2.0, "CO": 2.5, "OK": 1.8, "NE": 1.8, "KS": 1.8}},
+        {"cause": "hail",           "freq": 0.0012, "state_mult": {"HP": 2.5, "JK": 2.5, "UK": 2.0, "MH": 1.4}},
         {"cause": "vandalism",      "freq": 0.004},
         {"cause": "firedamage",     "freq": 0.0012, "exclude_powertrain": ["EV"]},
-        {"cause": "waterdamage",    "freq": 0.0012},  # flood / submersion
+        {"cause": "waterdamage",    "freq": 0.0030, "state_mult": MONSOON_STATES},  # waterlogging / submersion
         # EV-only high-voltage battery perils (tagged battery_fault)
         {"cause": "firedamage",     "freq": 0.0006, "only_powertrain": ["EV"], "battery": "thermal"},
         {"cause": "product",        "freq": 0.0055, "only_powertrain": ["EV"], "battery": "cell_failure",
@@ -164,8 +183,9 @@ CAUSES = {
         {"cause": "rearend",        "freq": 0.045},
         {"cause": "fixedobjcoll",   "freq": 0.020},
         {"cause": "otherobjcoll",   "freq": 0.006},
-        {"cause": "rollover",       "freq": 0.004, "state_mult": {"TX": 2.1, "OK": 1.6}},
-        {"cause": "theftentire",    "freq": 0.0020, "state_mult": {"IL": 2.2}},
+        {"cause": "rollover",       "freq": 0.004, "state_mult": HILL_STATES},
+        {"cause": "theftentire",    "freq": 0.0020, "state_mult": THEFT_STATES},
+        {"cause": "waterdamage",    "freq": 0.0025, "state_mult": MONSOON_STATES},
         {"cause": "theftparts",     "freq": 0.0060, "exclude_powertrain": ["EV"]},
         {"cause": "glassbreakage",  "freq": 0.030},
         {"cause": "loadingdamage",  "freq": 0.006},
@@ -175,21 +195,21 @@ CAUSES = {
          "age_slope": 0.30},
     ],
     "HOPHomeowners": [
-        {"cause": "waterdamage", "freq": 0.020,
+        {"cause": "waterdamage", "freq": 0.020, "state_mult": MONSOON_STATES,
          "year_trend": {2022: 1.00, 2023: 1.06, 2024: 1.18, 2025: 1.33, 2026: 1.48}},
         {"cause": "fire",        "freq": 0.0035},
-        {"cause": "wind",        "freq": 0.010, "state_mult": {"FL": 1.8, "TX": 1.5, "LA": 1.7, "OK": 1.6}},
-        {"cause": "hail",        "freq": 0.008, "state_mult": {"TX": 2.2, "CO": 2.6, "OK": 2.0, "NE": 2.0, "KS": 2.0}},
-        {"cause": "burglary",    "freq": 0.006},
-        {"cause": "mold",        "freq": 0.0015, "state_mult": {"FL": 1.8, "LA": 1.6}},
+        {"cause": "wind",        "freq": 0.008, "state_mult": CYCLONE_STATES},
+        {"cause": "hail",        "freq": 0.002, "state_mult": {"HP": 2.5, "JK": 2.5, "UK": 2.0}},
+        {"cause": "burglary",    "freq": 0.006, "state_mult": {"DL": 1.6, "UP": 1.4, "BR": 1.4}},
+        {"cause": "mold",        "freq": 0.0015, "state_mult": {"KL": 1.8, "MH": 1.6, "AS": 1.6, "WB": 1.4}},
         {"cause": "fall",        "freq": 0.0020},   # premises liability (slip & fall)
     ],
     "CommercialProperty": [
-        {"cause": "waterdamage", "freq": 0.026,
+        {"cause": "waterdamage", "freq": 0.026, "state_mult": MONSOON_STATES,
          "year_trend": {2022: 1.00, 2023: 1.05, 2024: 1.14, 2025: 1.24, 2026: 1.33}},
         {"cause": "fire",        "freq": 0.0080},
-        {"cause": "wind",        "freq": 0.014, "state_mult": {"FL": 1.8, "TX": 1.5, "LA": 1.7}},
-        {"cause": "hail",        "freq": 0.008, "state_mult": {"TX": 2.2, "CO": 2.6, "OK": 2.0}},
+        {"cause": "wind",        "freq": 0.012, "state_mult": CYCLONE_STATES},
+        {"cause": "hail",        "freq": 0.002, "state_mult": {"HP": 2.5, "JK": 2.5, "UK": 2.0}},
         {"cause": "burglary",    "freq": 0.012},
         {"cause": "vandalism",   "freq": 0.008},
         {"cause": "fall",        "freq": 0.030},    # premises liability (package GL)
@@ -206,21 +226,24 @@ CAUSES = {
     ],
 }
 
-# Catastrophe events: extra claims for policies in force in the listed states
+# Catastrophe events: extra claims for policies in force in the listed states.
+# Codes are synthetic; the event types follow India's recurring cyclone and monsoon-flood losses.
 CAT_EVENTS = [
-    {"cat_code": "CAT-2023-TX-HAIL-0412", "date": "2023-04-12", "states": ["TX"], "days": 2,
-     "causes": {"PersonalAuto": ("hail", 0.050), "BusinessAuto": ("hail", 0.040),
-                "HOPHomeowners": ("hail", 0.070), "CommercialProperty": ("hail", 0.060)}},
-    {"cat_code": "CAT-2024-CO-HAIL-0603", "date": "2024-06-03", "states": ["CO"], "days": 2,
-     "causes": {"PersonalAuto": ("hail", 0.060), "HOPHomeowners": ("hail", 0.080),
-                "CommercialProperty": ("hail", 0.060)}},
-    {"cat_code": "CAT-2024-FL-HURR-1009", "date": "2024-10-09", "states": ["FL"], "days": 4,
-     "causes": {"HOPHomeowners": ("wind", 0.120), "CommercialProperty": ("wind", 0.100),
+    {"cat_code": "CAT-2023-GJ-CYCL-0615", "date": "2023-06-15", "states": ["GJ"], "days": 3,
+     "causes": {"HOPHomeowners": ("wind", 0.100), "CommercialProperty": ("wind", 0.080),
                 "PersonalAuto": ("waterdamage", 0.020), "BusinessAuto": ("waterdamage", 0.015)}},
-    {"cat_code": "CAT-2025-TX-FREEZE-0120", "date": "2025-01-20", "states": ["TX", "OK", "LA"], "days": 5,
-     "causes": {"HOPHomeowners": ("waterdamage", 0.050), "CommercialProperty": ("waterdamage", 0.040)}},
-    {"cat_code": "CAT-2026-IL-WIND-0315", "date": "2026-03-15", "states": ["IL", "IN", "MO"], "days": 2,
-     "causes": {"HOPHomeowners": ("wind", 0.045), "CommercialProperty": ("wind", 0.035)}},
+    {"cat_code": "CAT-2023-TN-FLOOD-1204", "date": "2023-12-04", "states": ["TN", "AP"], "days": 4,
+     "causes": {"HOPHomeowners": ("waterdamage", 0.080), "CommercialProperty": ("waterdamage", 0.070),
+                "PersonalAuto": ("waterdamage", 0.050), "BusinessAuto": ("waterdamage", 0.040)}},
+    {"cat_code": "CAT-2024-KL-FLOOD-0730", "date": "2024-07-30", "states": ["KL"], "days": 3,
+     "causes": {"HOPHomeowners": ("waterdamage", 0.050), "CommercialProperty": ("waterdamage", 0.040),
+                "PersonalAuto": ("waterdamage", 0.020)}},
+    {"cat_code": "CAT-2024-OR-CYCL-1024", "date": "2024-10-24", "states": ["OR", "WB"], "days": 3,
+     "causes": {"HOPHomeowners": ("wind", 0.100), "CommercialProperty": ("wind", 0.080),
+                "PersonalAuto": ("waterdamage", 0.015)}},
+    {"cat_code": "CAT-2025-MH-FLOOD-0819", "date": "2025-08-19", "states": ["MH"], "days": 3,
+     "causes": {"PersonalAuto": ("waterdamage", 0.040), "BusinessAuto": ("waterdamage", 0.030),
+                "HOPHomeowners": ("waterdamage", 0.040), "CommercialProperty": ("waterdamage", 0.040)}},
 ]
 
 # ClaimCenter LossCause code -> risk_category_tag (custom extension). Perils that exist on
@@ -238,32 +261,33 @@ ASSIGNED_GROUP_SIZE = {"Auto Fast Track": 8, "Auto Physical Damage": 14, "Auto T
                        "Liability": 7, "WC Medical Only": 6, "WC Lost Time": 8, "SIU": 4}
 
 LOSS_DESCRIPTIONS = {
-    "vehcollision": ["Insured vehicle collided with another vehicle at intersection",
-                     "Two-vehicle collision while changing lanes", "Side-impact collision in parking lot"],
-    "rearend": ["Insured vehicle rear-ended at stop light", "Insured rear-ended other vehicle in slow traffic"],
-    "fixedobjcoll": ["Vehicle struck guardrail on wet road", "Vehicle struck pole while parking"],
-    "animalcollision": ["Vehicle struck deer on rural highway"],
-    "otherobjcoll": ["Road debris struck vehicle underbody on highway"],
-    "rollover": ["Single-vehicle rollover after leaving roadway"],
-    "theftentire": ["Vehicle stolen from driveway overnight", "Vehicle stolen from parking garage"],
-    "theftparts": ["Catalytic converter cut from vehicle", "Wheels and tires stolen overnight"],
-    "glassbreakage": ["Windshield cracked by stone chip", "Side window broken"],
-    "hail": ["Hail damage to vehicle/roof during storm"],
-    "vandalism": ["Vehicle keyed and windows broken", "Graffiti and forced entry damage"],
+    "vehcollision": ["Insured car collided with another car at a junction", "Collision with a two-wheeler while changing lanes",
+                     "Side impact in a parking lot"],
+    "rearend": ["Insured car rear-ended at a traffic signal", "Insured car hit the vehicle ahead in slow traffic"],
+    "fixedobjcoll": ["Car hit a road divider on a wet road", "Car hit a pillar while parking"],
+    "animalcollision": ["Car hit stray cattle on a national highway"],
+    "otherobjcoll": ["Pothole and road debris damaged the car underbody"],
+    "rollover": ["Car went off a hill road and overturned"],
+    "theftentire": ["Car stolen from outside the residence overnight", "Car stolen from a housing society parking"],
+    "theftparts": ["Battery and alloy wheels stolen overnight", "Side mirrors and headlamps stolen"],
+    "glassbreakage": ["Windshield cracked by a stone chip", "Side window broken"],
+    "hail": ["Hailstorm damage to the vehicle / roof"],
+    "vandalism": ["Car scratched and windows broken", "Forced entry damage"],
     "firedamage": ["Engine compartment fire while driving"],
-    "waterdamage": ["Water damage from burst supply line", "Water damage from appliance leak",
-                    "Vehicle submerged in flood water"],
-    "fire": ["Kitchen fire spread to adjoining rooms", "Electrical fire in attic"],
-    "wind": ["Wind damage to roof and siding"],
-    "burglary": ["Forced entry, electronics and jewelry taken", "Break-in, inventory and equipment taken"],
-    "mold": ["Mold growth discovered behind wall"],
-    "fall": ["Visitor slipped on wet floor and was injured", "Trip and fall on uneven walkway"],
-    "strain": ["Lower back strain lifting boxes", "Shoulder strain from repetitive overhead work"],
-    "struck": ["Employee struck by falling object"], "cut": ["Laceration from box cutter"],
+    "waterdamage": ["Seepage from monsoon rain damaged walls and flooring", "Water damage from an overhead tank leak",
+                    "Car submerged in a waterlogged underpass during monsoon"],
+    "fire": ["Short-circuit fire in the kitchen spread to adjoining rooms", "Electrical fire in the meter room"],
+    "wind": ["Cyclone damaged the roof, windows and boundary wall"],
+    "burglary": ["Break-in, jewellery and electronics taken", "Shop break-in, stock and equipment taken"],
+    "mold": ["Damp and fungus found behind wall panelling after monsoon"],
+    "fall": ["Visitor slipped on a wet floor and was injured", "Customer tripped on a broken step"],
+    "strain": ["Back strain lifting cement bags", "Shoulder strain from repetitive overhead work"],
+    "struck": ["Worker struck by a falling object at site"], "cut": ["Laceration from a cutting tool"],
     "caught_in": ["Hand caught in machinery"], "burn_scald": ["Burn from hot equipment"],
-    "motorvehicle": ["Employee injured in vehicle accident while on duty"],
-    "loadingdamage": ["Cargo damaged during loading"],
+    "motorvehicle": ["Employee injured in a road accident while on duty"],
+    "loadingdamage": ["Goods damaged during loading"],
 }
+ENGINE_WATER_DESCRIPTION = "Engine seized after driving through a waterlogged road (hydrostatic lock)"
 BATTERY_DESCRIPTIONS = {
     "collision": "Collision damaged high-voltage battery enclosure; pack flagged for replacement",
     "debris": "Road debris punctured high-voltage battery enclosure",
@@ -343,12 +367,15 @@ def generate_policy_df(rng: np.random.Generator) -> pd.DataFrame:
     old_vehicle = auto_mask & (base["vehicle_year"].fillna(2030).to_numpy() < 2014)
     base["physical_damage_cov"] = np.where(auto_mask, ~(old_vehicle & (rng.random(n) < 0.6)), False)
     deductible = np.zeros(n)
-    deductible[auto_mask] = rng.choice([250, 500, 1000], size=auto_mask.sum(), p=[0.15, 0.55, 0.30])
-    deductible[products == "HOPHomeowners"] = rng.choice([1000, 2500, 5000], size=(products == "HOPHomeowners").sum(), p=[0.55, 0.35, 0.10])
+    # Compulsory excess Rs 1,000 / 2,000 by engine size, plus voluntary excess
+    deductible[auto_mask] = rng.choice([100, 200, 500], size=auto_mask.sum(), p=[0.6, 0.3, 0.1])
+    deductible[products == "HOPHomeowners"] = rng.choice([500, 1000, 2500], size=(products == "HOPHomeowners").sum(), p=[0.55, 0.35, 0.10])
     deductible[is_cp] = rng.choice([2500, 5000, 10000], size=is_cp.sum(), p=[0.4, 0.45, 0.15])
     base["deductible"] = deductible
     liab = np.zeros(n)
-    liab[auto_mask] = rng.choice([50_000, 100_000, 250_000, 500_000], size=auto_mask.sum(), p=[0.2, 0.4, 0.3, 0.1])
+    # Third-party bodily injury is unlimited by law; this caps property damage (Rs 7.5 lakh) and
+    # stands in for "unlimited" on injury at Rs 1 crore
+    liab[auto_mask] = rng.choice([75_000, 1_000_000], size=auto_mask.sum(), p=[0.0, 1.0])
     liab[products == "HOPHomeowners"] = rng.choice([100_000, 300_000, 500_000], size=(products == "HOPHomeowners").sum(), p=[0.3, 0.5, 0.2])
     liab[is_cp] = 1_000_000
     base["liability_limit"] = liab
@@ -359,8 +386,8 @@ def generate_policy_df(rng: np.random.Generator) -> pd.DataFrame:
 
     # Annual premium at inception (per policy, full year)
     prem = np.zeros(n)
-    state_factor = np.where(np.isin(states, ["FL", "LA", "MI", "NY", "CA"]), 1.25, 1.0)
-    prem[is_pa] = 1750 * units[is_pa] * np.where(powertrain[is_pa] == "EV", 1.25, 1.0)
+    state_factor = np.where(np.isin(states, ["MH", "DL", "KA", "TN", "GJ"]), 1.15, 1.0)   # metro zones
+    prem[is_pa] = 2250 * units[is_pa] * np.where(powertrain[is_pa] == "EV", 1.25, 1.0)
     prem[is_ba] = 3000 * units[is_ba]
     hop = products == "HOPHomeowners"
     prem[hop] = 1700 * (prop_limit[hop] / 380_000) ** 0.8
@@ -466,12 +493,12 @@ def generate_occurrences(rng: np.random.Generator, policies: pd.DataFrame) -> pd
             if spec.get("age_slope"):
                 veh_age = (sub["period_start"].dt.year - sub["vehicle_year"]).clip(lower=0).to_numpy()
                 lam = lam * (1 + spec["age_slope"] * veh_age)
-            # Kia/Hyundai 2015-2021 ICE theft wave (strongest 2022-2023)
+            # Theft wave on 2015-2021 Maruti Suzuki / Hyundai petrol cars (strongest 2022-2023)
             kia_mult_max = 1.0
             if spec["cause"] == "theftentire":
-                kia = (sub["vehicle_make"].isin(["Kia", "Hyundai"]) & (sub["vehicle_powertrain"] == "ICE")
+                kia = (sub["vehicle_make"].isin(["Maruti Suzuki", "Hyundai"]) & (sub["vehicle_powertrain"] == "ICE")
                        & sub["vehicle_year"].between(2015, 2021)).to_numpy()
-                kia_mult_max = 6.0
+                kia_mult_max = 3.0
                 lam = lam * np.where(kia, kia_mult_max, 1.0)
             trend = spec.get("year_trend")
             tmax = max(trend.values()) if trend else 1.0
@@ -486,7 +513,7 @@ def generate_occurrences(rng: np.random.Generator, policies: pd.DataFrame) -> pd
             if trend:
                 keep &= rng.random(len(rep)) < np.array([trend.get(y, tmax) for y in years]) / tmax
             if spec["cause"] == "theftentire":
-                kia_r = (rp["vehicle_make"].isin(["Kia", "Hyundai"]) & (rp["vehicle_powertrain"] == "ICE")
+                kia_r = (rp["vehicle_make"].isin(["Maruti Suzuki", "Hyundai"]) & (rp["vehicle_powertrain"] == "ICE")
                          & rp["vehicle_year"].between(2015, 2021)).to_numpy()
                 decay = {2022: 1.0, 2023: 0.9, 2024: 0.45, 2025: 0.28, 2026: 0.22}
                 keep &= ~kia_r | (rng.random(len(rep)) < np.array([decay.get(y, 0.2) for y in years]))
@@ -507,6 +534,8 @@ def generate_occurrences(rng: np.random.Generator, policies: pd.DataFrame) -> pd
             if len(rep) == 0:
                 continue
             ld = d0.to_datetime64() + rng.integers(0, ev["days"], size=len(rep)) * np.timedelta64(1, "D")
+            inside = ld <= policies["earned_through"].to_numpy()[rep]   # an event day can fall after the term ends
+            rep, ld = rep[inside], ld[inside]
             pt = policies["vehicle_powertrain"].to_numpy()[rep]
             battery = np.where((pt == "EV") & (cause == "waterdamage") & (rng.random(len(rep)) < 0.7), "flood", None)
             occ.append(pd.DataFrame({"policy_row": rep, "loss_date": ld, "loss_cause": cause,
@@ -579,7 +608,7 @@ class ClaimBuilder:
         if ev and cause in COLLISION_CAUSES:
             repair *= 1.35   # EV repair premium: ADAS sensors, structural parts, certified shops
 
-        pack_cost = EV_PACK_COST.get(p["vehicle_model"], 18000) * _inflation(year, 0.03)
+        pack_cost = EV_PACK_COST.get(p["vehicle_model"], EV_PACK_DEFAULT) * _inflation(year, 0.03)
         pack_damaged = False
         if ev:
             if cause in COLLISION_CAUSES:
@@ -617,6 +646,12 @@ class ClaimBuilder:
             cycle, reserve_bias = 35, 1.0
         elif battery_mode == "thermal" and rng.random() < 0.12:
             denial = "mechanical_breakdown_excluded"   # carrier argues internal defect, not fire
+        elif cause == "waterdamage" and not ev and rng.random() < 0.30:
+            # Engine seized after driving through water: consequential engine damage is excluded unless
+            # the engine-protect add-on was bought
+            denial = "engine_damage_excluded"
+            loss = _ln(rng, 9000, 0.5) * infl
+            total_loss, salvage = False, 0.0
         elif cause == "waterdamage" and rng.random() < 0.05:
             denial = "wear_tear_deterioration"
         subro = rng.uniform(0.6, 0.95) if fault == "thirdparty" else 0.0
@@ -663,8 +698,8 @@ class ClaimBuilder:
                                        0, p["liability_limit"], 200, 0.7))
             return exps
         if cause == "waterdamage":
-            if cat_code and "HURR" in cat_code:
-                denial = "flood_excluded" if rng.random() < 0.35 else None
+            if cat_code:
+                denial = None                        # flood and inundation are named (STFI) perils
             elif rng.random() < 0.13:
                 denial = "wear_tear_deterioration"   # long-term seepage / gradual leak
             elif rng.random() < 0.03:
@@ -675,7 +710,7 @@ class ClaimBuilder:
             main, cycle = _ln(rng, 38000, 1.25) * scale, 150
         elif cause in ("wind", "hail"):
             main, cycle = _ln(rng, 11500, 0.75) * scale, 55
-            if cat_code and "HURR" in cat_code:
+            if cat_code and "CYCL" in cat_code:
                 main *= 2.2
         elif cause == "burglary":
             main, cycle = 0.0, 40
@@ -712,8 +747,8 @@ class ClaimBuilder:
                        "burn_scald": 0.25, "motorvehicle": 0.5}[cause]
         denial = None
         if rng.random() < 0.07:
-            denial = rng.choice(["wc_2B_preexisting_condition", "wc_1A_coming_and_going",
-                                 "wc_2D_no_medical_evidence"], p=[0.5, 0.2, 0.3])
+            denial = rng.choice(["ec_preexisting_condition", "ec_not_in_course_of_employment",
+                                 "ec_no_medical_evidence"], p=[0.5, 0.2, 0.3])
         lost_time = rng.random() < lost_time_p
         exps = [self._exposure("WCInjuryDamage", "WCWorkersCompCov", "insured",
                                _ln(rng, med_median, 1.0) * infl * (2.5 if lost_time else 1.0), 0, None,
@@ -931,6 +966,12 @@ class ClaimBuilder:
 
         desc = BATTERY_DESCRIPTIONS[battery_mode] if (tag == "battery_fault" and battery_mode) else \
             str(rng.choice(LOSS_DESCRIPTIONS.get(cause, ["Loss reported"])))
+        if any(e["denial"] == "engine_damage_excluded" for e in exps):
+            desc = ENGINE_WATER_DESCRIPTION
+        elif product in AUTO_LINES and cause == "waterdamage" and tag != "battery_fault":
+            desc = "Car submerged in a waterlogged underpass during monsoon"
+        elif product not in AUTO_LINES and cause == "waterdamage" and "submerged" in desc:
+            desc = "Seepage from monsoon rain damaged walls and flooring"
         if tag == "battery_fault" and not battery_mode:
             desc = BATTERY_DESCRIPTIONS["collision"]
         location = p["state"] if rng.random() < 0.96 or product != "PersonalAuto" else str(rng.choice(STATES, p=STATE_P))
@@ -1008,13 +1049,34 @@ def validate_integrity(policies: pd.DataFrame, claims: pd.DataFrame, exposures: 
     print("[OK]  All integrity checks passed:", ", ".join(checks))
 
 
+MONEY_COLUMNS = {
+    "policies": ["deductible", "liability_limit", "property_limit", "written_premium", "earned_premium", "vehicle_acv"],
+    "earned": ["earned_premium"],
+    "claims": ["initial_reserve", "paid_loss", "paid_expense", "outstanding_reserve", "claim_amount", "total_incurred",
+               "subrogation_amount", "salvage_amount", "net_incurred", "deductible_applied"],
+    "exposures": ["initial_reserve", "paid_loss", "paid_expense", "outstanding_reserve", "incurred_loss",
+                  "subrogation_recovery", "salvage_recovery", "deductible_applied", "coverage_limit"],
+}
+
+
+def to_inr(policies, earned, claims, exposures) -> None:
+    """Every amount from base units to whole rupees (in place). Incurred is re-summed after rounding."""
+    for name, df in (("policies", policies), ("earned", earned), ("claims", claims), ("exposures", exposures)):
+        for col in MONEY_COLUMNS[name]:
+            df[col] = (pd.to_numeric(df[col], errors="coerce") * INR_PER_UNIT).round(0)
+    claims["claim_amount"] = claims["paid_loss"] + claims["outstanding_reserve"]
+    claims["total_incurred"] = claims["claim_amount"] + claims["paid_expense"]
+    claims["net_incurred"] = claims["total_incurred"] - claims["subrogation_amount"] - claims["salvage_amount"]
+    exposures["incurred_loss"] = exposures["paid_loss"] + exposures["outstanding_reserve"]
+
+
 # =========================================================================
 # Main entry-point
 # =========================================================================
 def main() -> None:
     rng = np.random.default_rng(SEED)
     print("=" * 72)
-    print("  Roundtable -- Synthetic Insurance Data Generator")
+    print("  Roundtable -- Synthetic Insurance Data Generator (India, INR)")
     print(f"  Guidewire PolicyCenter + ClaimCenter (schema v10.2.1), valued {AS_OF.date()}")
     print("=" * 72)
 
@@ -1031,7 +1093,8 @@ def main() -> None:
     print(f"      {len(claims):,} reported claims ({len(occ) - len(claims):,} IBNR), {len(exposures):,} exposures")
     validate_integrity(policies, claims, exposures)
 
-    print(f"[5/5] Writing to SQLite -> {DB_PATH}")
+    to_inr(policies, earned, claims, exposures)
+    print(f"[5/5] Writing to SQLite -> {DB_PATH} (amounts in INR)")
     date_cols = {"policies": ["period_start", "period_end", "cancel_date", "earned_through"],
                  "claims": ["loss_date", "reported_date", "close_date", "reopened_date"],
                  "exposures": ["close_date"]}
